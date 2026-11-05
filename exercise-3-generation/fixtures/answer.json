@@ -1,0 +1,20 @@
+{
+  "claims": [
+    {
+      "text": "רוב השגיאות שנצפו הן HTTP401. יש להשוות מזהי מפתחות חתימה ולבדוק את זמן רענון ה־Key Cache.",
+      "citation_ids": [
+        "fixture-source-1",
+        "fixture-source-2"
+      ]
+    },
+    {
+      "text": "טרם נקבעה סיבת שורש מאושרת לאירוע הנוכחי.",
+      "citation_ids": [
+        "fixture-source-1"
+      ]
+    }
+  ],
+  "missing_information": [
+    "גרסת Auth Service, דוח מזהי המפתחות, זמן הרענון ותוצאות ההשוואה טרם צורפו."
+  ]
+}

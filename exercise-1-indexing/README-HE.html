@@ -1,0 +1,73 @@
+<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1">
+<title>תרגיל 1 — Indexing למסמכי טיפול בתקלות</title>
+<style>body{font:18px Arial,sans-serif;line-height:1.75;color:#18313d;background:#eef2f5;margin:0}main{max-width:1000px;margin:auto;padding:28px}section{background:#fff;border-radius:12px;padding:24px;margin:20px 0}h1,h2,h3{line-height:1.35}pre{direction:ltr;text-align:left;white-space:pre-wrap;background:#152d3c;color:#f4f9fc;padding:16px;border-radius:8px;overflow-wrap:anywhere}code{direction:ltr;unicode-bidi:embed}table{border-collapse:collapse;width:100%}td,th{padding:10px;border-bottom:1px solid #d6e0e5;text-align:right}li{margin-bottom:9px}a{color:#075da5}.note{border-right:5px solid #de9a37;padding-right:16px}nav a{margin-left:18px}summary{cursor:pointer}</style>
+<main><h1>תרגיל 1 — הכנת המסמכים לחיפוש: Indexing</h1>
+<p>נבנה את השלב הראשון של סוכן עזר לטיפול בתקלות: מסמכים → chunks עם מקור וגרסה → embeddings → index מקומי בקובץ JSON.</p>
+<nav><a href="#setup">הכנה</a><a href="#build">מה בונים?</a><a href="#run">הרצה</a><a href="#inspect">איפה רואים תוצאות?</a><a href="#bonuses">שני בונוסים</a><a href="#errors">פתרון תקלות</a></nav>
+<section><h2>מה תקבלו בסוף?</h2><p>קובץ שבו כל רשומה שומרת chunk, metadata וה־embedding שלו. תוכלו לפתוח רשומה ולראות את הטקסט המלא, את מסמך המקור ואת המספרים שהחזיר מודל ה־embeddings.</p><p>החיפוש לפי שאלת משתמש יתווסף בתרגיל הבא. כאן בונים ובודקים את המידע שישמש אותו.</p><p>המסמכים והאירועים מומצאים לצורכי תרגול. כל שאלה עתידית על ״האירוע הנוכחי״ מתייחסת ל־28 באוקטובר 2026 בשעה 09:26.</p></section>
+<section><h2>מפת הקבצים</h2><table><tr><th>קובץ</th><th>תפקיד</th></tr>
+<tr><td><code>documents/</code></td><td>שמונה מסמכי מקור: מפת שירותים, נהלים, שני תחקירים ותמונת אירוע.</td></tr>
+<tr><td><code>chunking.py</code></td><td>כאן משלימים שתי פונקציות: חלוקה ל־chunks ובניית metadata.</td></tr>
+<tr><td><code>build_index.py</code></td><td>קובץ ההרצה. prepare בונה רשומות טקסט; embed מוסיף להן embeddings.</td></tr>
+<tr><td><code>index_support.py</code></td><td>קוד מסופק לטעינה, לבדיקת נתונים ולקריאה לספק embeddings.</td></tr>
+<tr><td><code>inspect_index.py</code></td><td>מציג רשומה בטרמינל או יוצר תצוגת HTML לכל הרשומות.</td></tr>
+<tr><td><code>check_exercise.py</code></td><td>בודק את המימוש שלכם ללא קריאה למודל.</td></tr>
+<tr><td><code>preflight.py</code></td><td>בודק הכנות; עם sample מבצע גם בקשת embedding אחת.</td></tr>
+<tr><td><code>build/</code></td><td>נוצרת בהרצה. כאן נשמרים הקטעים, ה־index ותצוגת התוצאות.</td></tr></table></section>
+<section id="setup"><h2>1. הכנה לפני הכיתה</h2>
+<p>חלצו את ה־ZIP, פתחו ב־VS Code את התיקייה <code>exercise-1-indexing</code> עצמה, ואז בחרו Terminal → New Terminal. כל הפקודות הבאות רצות מתוך אותה תיקייה.</p>
+<details><summary>אצל נורית: מעבר לתיקייה בטרמינל</summary><pre>cd "/Users/nurit/AI Agents Course/Session4/exercise-1-indexing"</pre></details>
+<h3>Python</h3><p>נדרש Python 3.10 ומעלה. כל הקוד משתמש בספרייה הסטנדרטית שלו.</p><p>macOS / Linux:</p><pre>python3 --version
+python3 -m venv .venv
+source .venv/bin/activate
+python --version</pre><p>Windows, ב־PowerShell:</p><pre>py -3 --version
+py -3 -m venv .venv
+.\.venv\Scripts\Activate.ps1
+python --version</pre>
+<p>אם PowerShell חוסם הפעלה של הסביבה, השתמשו ב־<code>.\.venv\Scripts\python.exe</code> במקום <code>python</code> בכל פקודה. כך אפשר להמשיך עם אותה סביבה בלי לשנות מדיניות במחשב.</p>
+<h3>בחרו מסלול embeddings אחד</h3><p><strong>מסלול מקומי ומסלול ענן זמינים לכל המשתתפים.</strong> מי שלא הכין מודל מקומי יכול לבחור בענן. השתמשו באותו ספק ובאותו מודל לכל ה־index; השאלה בתרגיל החיפוש תעבור דרך מודל תואם.</p>
+<h3>א. מקומי — Ollama עם embeddinggemma</h3><ol><li>התקינו את Ollama לפי <a href="https://ollama.com/download">האתר הרשמי</a> ופתחו את היישום.</li><li>בדקו אילו מודלים כבר קיימים:</li></ol><pre>ollama list</pre>
+<p>אם <code>embeddinggemma</code> חסר, פקודת ההכנה היא:</p><pre>ollama pull embeddinggemma</pre>
+<p>הפקודה מורידה מודל ודורשת רשת ומקום פנוי. מבצעים אותה לפני השיעור. לאחר ההכנה:</p><pre>python preflight.py --provider ollama
+python preflight.py --provider ollama --sample</pre>
+<p>ההרצה הראשונה מציגה <code>LOCAL MODEL READY</code>. השנייה מפעילה את המודל על דוגמה אחת ומציגה <code>REAL EMBEDDING VERIFIED; DIMENSIONS: 768</code> עבור גרסת embeddinggemma הרגילה. הממדים בפועל נקראים מתשובת המודל.</p>
+<h3>ב. ענן — Voyage AI API</h3><p>ל־Anthropic אין שירות embeddings משלה; Anthropic ממליצה על Voyage AI, ולכן מסלול הענן משתמש בו. נדרשים מפתח API של Voyage AI (אישי או ארגוני), הרשאת שימוש ותקציב API זמין. במסלול זה אין הורדת מודל למחשב. בקשות embeddings עשויות להיות בתשלום לפי תנאי החשבון.</p>
+<p>בדיקת הכנה מבקשת מפתח בהקלדה מוסתרת:</p><pre>python preflight.py --provider voyage --ask-key</pre>
+<p>יופיע <code>CLOUD KEY PRESENT</code>. זה בודק שיש ערך למפתח. כדי לבדוק בפועל גישה ויצירת embedding אחד:</p><pre>python preflight.py --provider voyage --ask-key --sample</pre>
+<p>המודל במסלול זה הוא <code>voyage-3.5</code> (תומך גם בעברית). הדוגמה תציג את מספר הממדים שהוחזר. המפתח נשמר בזיכרון התהליך בלבד. בהרצה הבאה תתבקשו להקליד אותו שוב. מי שכבר הגדיר <code>VOYAGE_API_KEY</code> בסביבת העבודה יכול להשמיט את <code>--ask-key</code>.</p>
+<p class="note">Claude Code עוזר לכתוב ולהריץ את התוכנית. את ה־embeddings מחשב Ollama או Voyage AI API, לפי המסלול שתבחרו. Claude (Anthropic API) משמש בתרגיל 3 ליצירת התשובה, לא ל־embeddings. מנוי לכלי כתיבת קוד אינו מחליף הרשאה לספק embeddings.</p></section>
+<section id="build"><h2>2. מה אתם בונים?</h2><p>פתחו <code>chunking.py</code> והשלימו את שתי הפונקציות. אפשר לעבוד עם Claude Code. קראו את המימוש, הריצו ובדקו את הקטעים שהוא יוצר.</p>
+<h3>TODO 1 — split_document</h3><p>הקלט הוא מסמך שבו <code>body</code> מחזיק את הטקסט. התוצאה היא רשימת קטעים בסדר המקורי. לכל קטע:</p><pre>{"text": "exact text from the document", "start": 0, "end": 33}</pre>
+<ul><li><code>body[start:end]</code> חייב להיות זהה לטקסט שבקטע.</li><li>כל התוכן המקורי צריך להישמר; מותר לדלג על רווחים בין קטעים.</li><li>גודל כל קטע הוא עד <code>max_chars</code>, שערכו הרגיל 900 תווים. פסקה ארוכה דורשת חלוקה נוספת.</li><li>התחילו בחלוקה לפי פסקאות. שמרו תנאים וספים, ובדקו מה קורה לכותרת ולשורות טבלה.</li></ul>
+<h3>TODO 2 — make_metadata</h3><p>החזירו לכל קטע את השדות הבאים מתוך המסמך:</p><pre>document_id, version, status, updated, source, title</pre><p>לנוהל ההתחברות יש שתי גרסאות עם אותו Document ID. השדות <code>version</code> ו־<code>status</code> מאפשרים להבחין ביניהן. אין כאן סינון של הגרסה הישנה: שומרים את המידע על תוקף הגרסה כדי לבדוק אותו בהמשך.</p>
+<h3>בדיקה ראשונה</h3><pre>python check_exercise.py</pre><p>לפני המימוש תראו שגיאות <code>TODO</code> מכוונות. אחרי ההשלמה צריכות לעבור ארבע בדיקות, עם סיום <code>OK</code>. הבדיקות בוחנות כיסוי טקסט, גודל קטעים, שימור metadata ושמירת מסמך המקור.</p></section>
+<section id="run"><h2>3. הכנת הקטעים וה־metadata</h2><pre>python build_index.py prepare</pre><p>הפלט מציג שמונה מסמכים ואת מספר הקטעים מכל אחד, ולאחר מכן <code>PREPARED: documents=8, chunks=...</code>. מספר הקטעים תלוי במימוש שלכם. התוצר הוא <code>build/chunks.json</code>.</p>
+<p>בדקו רשומה לפני חישוב embeddings:</p><pre>python inspect_index.py build/chunks.json --record 1
+python inspect_index.py build/chunks.json --html build/chunks-view.html</pre><p>פתחו ב־VS Code את <code>build/chunks.json</code>, או פתחו בדפדפן את <code>build/chunks-view.html</code>. בדקו טקסט מלא, מקור, גרסה ומיקומי הקטע. בשלב הזה עדיין אין וקטור.</p>
+<h2>4. יצירת embeddings אמיתיים</h2><p>בחרו <strong>אחת</strong> משתי הפקודות לפי מסלול ההכנה שלכם.</p><p>מקומי:</p><pre>python build_index.py embed --provider ollama --model embeddinggemma</pre><p>ענן:</p><pre>python build_index.py embed --provider voyage --model voyage-3.5 --ask-key</pre>
+<p>הקוד מציג התקדמות ושומר <code>build/index.json</code>. בשורת הסיכום תראו את מספר המסמכים, הקטעים והממדים. ה־manifest מתעד את הספק, המודל, פורמט הקלט והממדים. במסלול מקומי נשמר גם digest המודל שהותקן.</p>
+<p>ההרצה מחשבת מחדש embeddings לכל הקטעים. אם עוברים ספק או מודל, מריצים את שלב embed מחדש לכל הקטעים. הקובץ החדש מחליף את <code>build/index.json</code>; שמרו עותק בשם אחר אם ברצונכם להשוות.</p></section>
+<section id="inspect"><h2>5. איפה רואים chunk, מקור ו־embedding?</h2><pre>python inspect_index.py build/index.json --record 1
+python inspect_index.py build/index.json --record 1 --full-vector
+python inspect_index.py build/index.json --html build/index-view.html</pre>
+<ul><li><code>FULL CHUNK TEXT</code> מציג את כל טקסט הקטע.</li><li><code>METADATA</code> מציג את המקור, ה־Document ID, הגרסה ומצב המסמך.</li><li><code>VECTOR_DIMENSIONS</code> מציג כמה מספרים יש בווקטור.</li><li><code>VECTOR_PREVIEW_FIRST_8</code> מציג את שמונת הערכים הראשונים. <code>--full-vector</code> מציג את כולם.</li></ul>
+<p>פתחו את <code>build/index-view.html</code> בדפדפן. לכל קטע יש טקסט קריא ופרטים שנפתחים בלחיצה. אפשר לבדוק גם את הווקטור המלא. כדי לבחור רשומה אחרת בטרמינל, החליפו את המספר שאחרי <code>--record</code>.</p>
+<h3>מה בודקים יחד?</h3><ul><li>האם תנאי ההסלמה נשמר עם משך הזמן והסף המתאים?</li><li>האם הקטע מצביע לגרסה הנכונה של נוהל ההתחברות?</li><li>האם אפשר לפתוח את קובץ המקור ולהתאים את הקטע לטקסט שבו?</li><li>האם כל הרשומות משתמשות באותו מודל ובאותו מספר ממדים?</li></ul><p>התוצר נשמר בקובץ מקומי. בשלב הזה אפשר לראות בדיוק מה יעמוד לרשות החיפוש בתרגיל הבא.</p></section>
+<section id="bonuses"><h2>שני בונוסים למתקדמים</h2>
+<h3>בונוס 1 — חלוקה שמבינה מבנה של מסמך</h3><p>שפרו את Chunking כך שכותרת סעיף תישמר עם התוכן שלה וטבלה ארוכה תחולק בין שורות. לכל חלק של הטבלה שימרו את כותרות העמודות, כדי שתנאי P1 ו־P2 יישארו מובנים.</p><p><strong>אתגר הבנייה:</strong> טקסט שהועתק ככותרת חוזרת כבר אינו span יחיד במקור. הגדירו בנפרד <code>source_text</code> עם המיקומים המקוריים ו־<code>embedding_text</code> הכולל את ההקשר שהוספתם; התאימו את השמירה והבדיקות.</p><p><strong>בדיקה:</strong> האריכו עותק של טבלת ההסלמה כך שיעבור את מגבלת הגודל. הציגו שכל שורת מידע נשמרה, שהכותרות זמינות בכל חלק ושאפשר לחזור לכל שורה במקור.</p><p><strong>למה זה מתקדם?</strong> צריך לתכנן ייצוג ששומר גם משמעות מקומית וגם עקיבות למקור, ולהחליט איך לטפל בטבלה הגדולה ממגבלת הקטע.</p>
+<h3>בונוס 2 — עדכון חלקי של index קיים</h3><p>הוסיפו אפשרות לקרוא index קודם ולחשב embeddings רק לטקסטים שהשתנו. השתמשו במזהי מקור וב־hash של קלט ה־embedding; הסירו רשומות של קטעים שנמחקו.</p><p><strong>אתגר הבנייה:</strong> הגדירו מתי מותר להשתמש בווקטור ישן. שינוי ספק, מודל, digest מקומי, מספר ממדים או פורמט הקלט צריך לבטל שימוש חוזר שאינו תואם. שינוי metadata בלבד יכול לעדכן הפניה בלי חישוב חדש, בתנאי שהקלט המדויק למודל נשאר זהה.</p><p><strong>בדיקה:</strong> השוו שלוש הרצות: ללא שינוי; שינוי פסקה אחת; מחיקת מסמך. הציגו counters עבור קטעים שנשמרו, חושבו מחדש והוסרו. הוסיפו גם בדיקת שינוי מודל שמחייב חישוב מחדש. בדקו מה קורה כאשר פסקה שנוספה מזיזה את מיקומי כל הקטעים שאחריה.</p><p><strong>למה זה מתקדם?</strong> נדרש לשלב זהות מסמך, תוקף cache, מחיקת מידע ישן ותאימות וקטורים. ספירת קטעים בלבד אינה מוכיחה שהעדכון תקין.</p>
+<p>שני הבונוסים הם הרחבות בחירה לאותו תוצר. אין הגשה נפרדת. משך התרגיל עם Claude Code ייקבע לאחר חזרה מעשית בכיתה או עם המרצה.</p></section>
+<section><h2>בדיקת קבצים כשאין ספק embeddings זמין</h2><p>אפשר לבדוק את מבנה התוצר באמצעות fixture מקומי. הוא יוצר שמונה מספרים מתוך hash של הטקסט לצורכי בדיקת קוד בלבד.</p><pre>python build_index.py embed --fixture
+python inspect_index.py build/offline-index.json --record 1</pre><p>בפלט וב־manifest כתוב <code>offline_fixture</code>. המספרים במסלול זה אינם embeddings סמנטיים. המסלול המקומי או מסלול הענן נדרשים כדי להשלים את שלב ה־embeddings של התרגיל.</p></section>
+<section id="errors"><h2>אם משהו נעצר</h2><table><tr><th>הודעה</th><th>מה עושים?</th></tr>
+<tr><td><code>TODO 1</code> או <code>TODO 2</code></td><td>פותחים chunking.py ומשלימים את הפונקציה המתאימה. זו עצירת הפתיחה הצפויה.</td></tr>
+<tr><td><code>Cannot reach Ollama</code></td><td>פותחים את יישום Ollama ובודקים ollama list. ב־Linux אפשר להפעיל ollama serve בטרמינל נוסף ולהשאירו פתוח.</td></tr>
+<tr><td><code>Model not installed</code></td><td>מכינים embeddinggemma מראש, או בוחרים במסלול Voyage AI API.</td></tr>
+<tr><td><code>VOYAGE_API_KEY is missing</code></td><td>מוסיפים --ask-key לפקודת הענן ומקלידים את המפתח בסתר.</td></tr>
+<tr><td><code>Voyage AI HTTP 401 / 403 / 429</code></td><td>בודקים מפתח, גישה לפרויקט, תקציב ומגבלות קצב בחשבון API. אין צורך לשלוח מפתח למרצה.</td></tr>
+<tr><td><code>Chunking omitted source text</code></td><td>בודקים את מיקומי הקטעים ואת הטיפול ברווחים; ייתכן שטקסט או שורת טבלה הושמטו.</td></tr>
+<tr><td><code>Chunk exceeds max_chars</code></td><td>מוסיפים חלוקה של פסקה ארוכה ובודקים שוב את הטקסט שנשמר.</td></tr>
+<tr><td><code>Metadata mismatch</code></td><td>מעתיקים את שדה המקור מתוך המסמך שנמסר לפונקציה; בודקים שלא נשמר ערך קבוע לכל המסמכים.</td></tr>
+<tr><td>אין build/chunks.json</td><td>מריצים קודם prepare ומוודאים שהסתיים בשורת PREPARED.</td></tr></table></section>
+<section><h2>תיעוד טכני ששימש להכנת התרגיל</h2><ul><li><a href="https://docs.ollama.com/api/embed">Ollama — /api/embed</a>: בקשה לטקסט או רשימת טקסטים, קבלת embeddings ושליטה בחיתוך קלט.</li><li><a href="https://ollama.com/library/embeddinggemma">Ollama — embeddinggemma</a>: שם המודל ופקודת ההכנה.</li><li><a href="https://ai.google.dev/gemma/docs/embeddinggemma/model_card">Google — EmbeddingGemma model card</a>: פורמט קלט למסמכים וממדי המודל.</li><li><a href="https://docs.claude.com/en/docs/build-with-claude/embeddings">Anthropic — Embeddings</a>: ההמלצה על Voyage AI.</li><li><a href="https://docs.voyageai.com/reference/embeddings-api">Voyage AI — Embeddings API</a>: מודל embeddings, input_type ומסלול API בענן.</li></ul></section>
+</main></html>

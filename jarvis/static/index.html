@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>JARVIS Console</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Orbitron:wght@500;700;900&family=Rajdhani:wght@400;500;600;700&family=Heebo:wght@300;400;500;700&family=JetBrains+Mono:wght@400;500&display=swap">
+  <link rel="stylesheet" href="/static/style.css">
+</head>
+<body data-state="booting">
+  <div class="backdrop" aria-hidden="true"><div class="grid"></div><div class="glow"></div><div class="scan"></div></div>
+
+  <!-- Boot sequence: filled with real system checks -->
+  <div id="boot" class="boot" aria-live="polite">
+    <div class="boot-inner">
+      <div class="boot-title">JARVIS</div>
+      <ol id="boot-lines" class="boot-lines"></ol>
+      <button id="boot-skip" class="ghost">Skip</button>
+    </div>
+  </div>
+
+  <header class="topbar">
+    <div class="brand">
+      <span class="brand-mark" aria-hidden="true"></span>
+      <div>
+        <h1>JARVIS</h1>
+        <p>Retrieval intelligence console</p>
+      </div>
+    </div>
+    <div class="topbar-center" id="state-banner">STANDING BY</div>
+    <div class="topbar-right">
+      <span id="conn" class="pill">LINK …</span>
+      <div class="clock"><time id="clock">--:--:--</time><span id="date"></span></div>
+    </div>
+  </header>
+
+  <main class="layout">
+    <!-- Left: systems, protocols (skills), mission log (history) -->
+    <aside class="hud-panel left">
+      <section>
+        <div class="panel-head"><h2>Systems</h2><button id="refresh-status" class="icon-btn" title="Re-check systems" aria-label="Re-check systems">
+          <svg viewBox="0 0 24 24"><path d="M20 12a8 8 0 1 1-2.34-5.66M20 4v5h-5"/></svg></button></div>
+        <ul id="systems" class="systems"><li class="muted">Scanning…</li></ul>
+      </section>
+      <section>
+        <div class="panel-head"><h2>Protocols</h2></div>
+        <div id="skills" class="skills" role="radiogroup" aria-label="Skills"></div>
+      </section>
+      <section class="grow">
+        <div class="panel-head"><h2>Mission log</h2></div>
+        <ul id="history" class="history"></ul>
+      </section>
+    </aside>
+
+    <!-- Center: the core, the dialogue, the command line -->
+    <section class="center">
+      <div class="core-wrap">
+        <svg class="core" id="core" viewBox="0 0 400 400" aria-hidden="true">
+          <defs>
+            <radialGradient id="coreGlow"><stop offset="0" stop-color="#e9fbff"/><stop offset=".35" stop-color="#7fe7ff"/><stop offset="1" stop-color="#00b4ff" stop-opacity="0"/></radialGradient>
+          </defs>
+          <circle class="halo" cx="200" cy="200" r="150"/>
+          <g class="ring r1"><circle cx="200" cy="200" r="186" /></g>
+          <g class="ring r2"><circle cx="200" cy="200" r="168" /></g>
+          <g class="ring ticks" id="ticks"></g>
+          <g class="ring r3"><circle cx="200" cy="200" r="128" /></g>
+          <g class="ring r4"><circle cx="200" cy="200" r="112" /></g>
+          <g class="ring segments" id="segments"></g>
+          <g class="ring r5"><circle cx="200" cy="200" r="70" /></g>
+          <circle class="nucleus" cx="200" cy="200" r="46" fill="url(#coreGlow)"/>
+          <circle class="nucleus-ring" cx="200" cy="200" r="34"/>
+        </svg>
+        <div class="core-label"><span id="core-state">STANDING BY</span><small id="core-sub">Awaiting instructions</small></div>
+      </div>
+
+      <div id="feed" class="feed" aria-live="polite">
+        <div class="intro" id="intro">
+          <p class="intro-line">Good to see you. Ask anything about the incident documents —</p>
+          <p class="intro-line dim">type below, or hold the microphone and speak. Every answer is grounded in cited sources.</p>
+        </div>
+      </div>
+
+      <form id="composer" class="composer" autocomplete="off">
+        <div id="options" class="options"></div>
+        <div class="command">
+          <button type="button" id="mic" class="mic" title="Voice command (Whisper, local)" aria-label="Voice command">
+            <svg viewBox="0 0 24 24"><rect x="9" y="3" width="6" height="11" rx="3"/><path d="M5 11a7 7 0 0 0 14 0M12 18v3"/></svg>
+          </button>
+          <textarea id="question" rows="1" dir="auto" placeholder="Command or question…" aria-label="Question"></textarea>
+          <button type="submit" id="send" class="engage">Engage</button>
+        </div>
+        <div class="composer-foot">
+          <label class="toggle"><input type="checkbox" id="speak" checked><span></span>Voice replies</label>
+          <label class="field">Language
+            <select id="voice-lang"><option value="he">עברית</option><option value="en">English</option><option value="">Auto</option></select>
+          </label>
+          <span class="hint">Enter to engage · Shift+Enter new line · Ctrl+Space to talk</span>
+        </div>
+      </form>
+    </section>
+
+    <!-- Right: pipeline telemetry -->
+    <aside class="hud-panel right">
+      <section>
+        <div class="panel-head"><h2>Pipeline telemetry</h2><button id="cancel" class="abort" hidden>Abort</button></div>
+        <ol id="stages" class="stages"><li class="muted">No active run.</li></ol>
+      </section>
+      <section>
+        <div class="panel-head"><h2>Evidence</h2><span id="evidence-meta" class="meta"></span></div>
+        <div id="evidence" class="evidence"><p class="muted">Retrieved chunks appear here.</p></div>
+      </section>
+      <section class="grow">
+        <div class="panel-head"><h2>System log</h2><label class="toggle small"><input type="checkbox" id="autoscroll" checked><span></span>Follow</label></div>
+        <pre id="log" class="log"></pre>
+      </section>
+    </aside>
+  </main>
+
+  <div id="toast" class="toast" role="status" hidden></div>
+  <script src="/static/app.js"></script>
+</body>
+</html>

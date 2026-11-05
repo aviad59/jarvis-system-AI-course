@@ -1,0 +1,63 @@
+<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>תרגיל 2 — Retrieval</title>
+<style>body{font:18px Arial;line-height:1.75;color:#18313d;background:#eef2f5;margin:0}main{max-width:1000px;margin:auto;padding:28px}section{background:white;border-radius:12px;padding:24px;margin:20px 0}h1,h2,h3{line-height:1.35}pre{direction:ltr;text-align:left;white-space:pre-wrap;background:#152d3c;color:#f4f9fc;padding:16px;border-radius:8px;overflow-wrap:anywhere}code{direction:ltr;unicode-bidi:embed}li{margin-bottom:10px}a{color:#075da5}.note{border-right:5px solid #de9a37;padding-right:16px}table{width:100%;border-collapse:collapse}td,th{text-align:right;padding:10px;border-bottom:1px solid #d6e0e5}</style>
+<main><h1>תרגיל 2 — חיפוש ראיות במסמכי טיפול בתקלות</h1><p>נמשיך מה־index של תרגיל 1: שאלה → query embedding → Cosine Similarity → בחירת Top-k → קטעים עם מקורות.</p>
+<section><h2>מה נבנה?</h2><p>תממשו את חישוב Cosine Similarity ואת בחירת הקטעים בעלי הציון הגבוה ביותר. אחר כך תבדקו האם הטקסטים שחזרו עוזרים לענות על שאלת האירוע.</p><p>תוצר התרגיל הוא <code>build/search-results.json</code>. הוא שומר את השאלה ואת הקטעים שנמצאו, כולל טקסט, מקור, גרסה וציון. אותו קובץ ישמש בתרגיל 3 ליצירת תשובה מבוססת מקורות.</p></section>
+<section><h2>1. הכנות ותיקיית העבודה</h2><p>חלצו את שני התרגילים כך שהתיקיות יהיו זו לצד זו:</p><pre>course-work/
+  exercise-1-indexing/
+    build/index.json
+  exercise-2-retrieval/
+    search.py
+    retrieval.py</pre><p>פתחו ב־VS Code את <code>exercise-2-retrieval</code>, ואז Terminal → New Terminal. כל הפקודות בהמשך רצות מתוך התיקייה הזאת.</p>
+<details><summary>אצל נורית: הפקודה למעבר לתיקייה</summary><pre>cd "/Users/nurit/AI Agents Course/Session4/exercise-2-retrieval"</pre></details>
+<p>אפשר להשתמש בסביבת Python של התרגיל הראשון. macOS / Linux:</p><pre>source ../exercise-1-indexing/.venv/bin/activate
+python --version</pre><p>Windows, ב־PowerShell:</p><pre>..\exercise-1-indexing\.venv\Scripts\Activate.ps1
+python --version</pre><p>אם הפעלת הסביבה נחסמת, החליפו את <code>python</code> ב־<code>..\exercise-1-indexing\.venv\Scripts\python.exe</code> בכל פקודה. נדרש Python 3.10 ומעלה; אין חבילות נוספות להתקנה.</p>
+<h3>איזה ספק embeddings משתמשים?</h3><p>הקוד קורא את הבחירה מתוך ה־index. אם הוא נוצר עם Ollama, פתחו את Ollama והשאירו את אותו מודל מותקן. אם הוא נוצר עם Voyage AI API, הכינו את מפתח ה־API של Voyage AI והוסיפו <code>--ask-key</code> לפקודת החיפוש. שני המסלולים זמינים לכל המשתתפים.</p>
+<p>אם טרם נוצר index אמיתי, חזרו ל־<a href="../exercise-1-indexing/README-HE.html">תרגיל 1</a> והשלימו את שלב embed. Claude Code הוא כלי הבנייה; query embedding מחושב באותו ספק embeddings שבו נבנו וקטורי המסמכים.</p></section>
+<section><h2>מפת הקבצים</h2><table><tr><th>קובץ</th><th>מה עושים בו?</th></tr><tr><td><code>retrieval.py</code></td><td>משלימים שתי פונקציות TODO: ציון לכל קטע ובחירת Top-k.</td></tr><tr><td><code>search.py</code></td><td>מריצים חיפוש. הוא טוען index, מחשב query embedding ושומר תוצאות.</td></tr><tr><td><code>index_support.py</code></td><td>פונקציות מסופקות לקריאת ספק embeddings ולאימות נתונים.</td></tr><tr><td><code>check_exercise.py</code></td><td>שש בדיקות מספריות לחלקים שבניתם.</td></tr><tr><td><code>inspect_results.py</code></td><td>מציג את הטקסטים והמקורות בטרמינל או ב־HTML.</td></tr><tr><td><code>bonus_ranking.py</code></td><td>שתי פונקציות הרחבה לבונוסים.</td></tr><tr><td><code>check_bonus.py</code></td><td>בדיקות לבונוסים בלבד; הן אינן נדרשות להשלמת הליבה.</td></tr></table></section>
+<section><h2>2. בונים את Cosine Similarity</h2><p>פתחו <code>retrieval.py</code> והשלימו <code>cosine_similarity</code>. חשבו:</p><pre>dot = sum(query[i] * chunk[i])
+query_length = sqrt(sum(query[i] ** 2))
+chunk_length = sqrt(sum(chunk[i] ** 2))
+cosine = dot / (query_length * chunk_length)</pre><p>כל הסכומים עוברים על כל הממדים בווקטור. בדקו שמספר הממדים זהה, שהערכים סופיים וששני הווקטורים בעלי אורך חיובי.</p>
+<h3>בדיקה ידנית קצרה</h3><pre>query = [1, 0]
+A = [0.8, 0.6]
+B = [1.6, 1.2]
+
+Dot Product(query, A) = 1*0.8 + 0*0.6 = 0.8
+Dot Product(query, B) = 1*1.6 + 0*1.2 = 1.6
+Cosine(query, A) = 0.8 / (1*1) = 0.8
+Cosine(query, B) = 1.6 / (1*2) = 0.8</pre><p>הווקטור B ארוך פי שניים מ־A, אבל הכיוון שלהם זהה. Cosine Similarity מנטרל את השפעת האורך בדוגמה הזאת. הציון אינו הסתברות שהקטע מספק תשובה נכונה.</p>
+<h2>3. בונים Top-k</h2><p>השלימו <code>select_top_k</code>. מיינו מהציון הגבוה לנמוך והחזירו עד <code>k</code> קטעים. בשוויון השתמשו ב־<code>chunk_id</code> בסדר עולה. שימרו את רשימת הקלט ללא שינוי.</p><pre>Scores: A=0.2, B=0.8, C=-0.1, D=0.5
+k=3  →  B, D, A</pre><p><code>k=3</code> פירושו שלושה קטעים, אם יש לפחות שלושה מועמדים. המספר לא קובע כמה מסמכים שונים יופיעו בתוצאה.</p>
+<h3>הרצת הבדיקות</h3><pre>python check_exercise.py</pre><p>לפני המימוש תופיע שגיאת TODO מכוונת. אחרי ההשלמה יופיעו <code>Ran 6 tests</code> ו־<code>OK</code>. אפשר להיעזר ב־Claude Code, ואז להסביר על הדוגמה המספרית מה הפונקציה מחשבת.</p></section>
+<section><h2>4. מריצים חיפוש על ה־index האמיתי</h2><p>בחרו את הפקודה המתאימה ל־index שנוצר בתרגיל 1.</p><h3>index מקומי מ־Ollama</h3><pre>python search.py --index ../exercise-1-indexing/build/index.json --question "אחרי העדכון יש יותר שגיאות התחברות ב-Cedar. מה כדאי לבדוק קודם?" --top-k 3</pre><h3>index מ־Voyage AI API</h3><pre>python search.py --index ../exercise-1-indexing/build/index.json --question "אחרי העדכון יש יותר שגיאות התחברות ב-Cedar. מה כדאי לבדוק קודם?" --top-k 3 --ask-key</pre>
+<p>המפתח מוקלד בסתר ונשמר רק בזיכרון התהליך. אם <code>VOYAGE_API_KEY</code> כבר מוגדר, אפשר להשמיט <code>--ask-key</code>. קריאה ל־Voyage AI API עשויה להיות בתשלום. השאלה נשלחת עם <code>input_type=query</code> והמסמכים נשמרו עם <code>input_type=document</code>.</p>
+<p>הקוד בודק שמספר הממדים תואם ל־index. במסלול המקומי הוא בודק גם ש־digest המודל המותקן זהה לזה ששימש לבניית ה־index. מעבר מודל או ספק מחייב בנייה מתאימה מחדש בתרגיל 1.</p>
+<h3>מה יופיע?</h3><pre>MODE: ollama
+CANDIDATES: ...; RETURNED: 3; TOP_K: 3
+RANK 1 | SCORE ... | DOCUMENT-ID vVERSION | STATUS
+...
+SAVED: .../build/search-results.json</pre><p>הציונים והסדר תלויים ב־embeddings וב־Chunking שלכם. בודקים את התוכן שחזר לפני שמסיקים אם החיפוש הצליח.</p></section>
+<section><h2>5. בודקים את הקטעים ולא רק את הציון</h2><pre>python inspect_results.py build/search-results.json
+python inspect_results.py build/search-results.json --html build/results-view.html</pre><p>פתחו בדפדפן את <code>build/results-view.html</code>. לכל תוצאה מוצגים ציון, מקור, גרסה וטקסט מלא.</p><ul><li>האם חזר נוהל ההתחברות הרלוונטי לסוג השגיאה?</li><li>האם מופיע נוהל שהוחלף, ומה בשדות המקור מצביע על כך?</li><li>האם יש גם מידע על האירוע הנוכחי, או רק תחקיר מאירוע קודם?</li><li>איזה מידע חסר כדי לקבוע סיבת שורש?</li></ul>
+<h3>בדיקה נוספת: גרסאות ו־Top-k</h3><p>שמרו קובץ נוסף עם חמישה קטעים ועם סינון מסמכים שמסומנים superseded. הוסיפו <code>--ask-key</code> אם ה־index נוצר בענן.</p><pre>python search.py --question "למי מסלימים כששגיאות ההתחברות ב-Cedar נמשכות?" --top-k 5 --exclude-superseded --output build/search-results-filtered.json
+python inspect_results.py build/search-results-filtered.json --html build/filtered-view.html</pre><p>השוו מה נוסף ומה הוסר. יותר קטעים עשויים להוסיף ראיות או מידע שאינו מועיל לשאלה; ההשוואה היא על המקורות והכיסוי.</p></section>
+<section><h2>6. מה עובר לתרגיל 3?</h2><p>קובץ <code>build/search-results.json</code> כולל:</p><pre>{
+  "schema_version": 1,
+  "question": "the original question",
+  "index_manifest": {"model": "...", "dimensions": 768, "...": "..."},
+  "results": [{
+    "rank": 1, "chunk_id": "...", "text": "full source chunk",
+    "metadata": {"source": "documents/...", "version": "...", "...": "..."},
+    "score": 0.8
+  }],
+  "mode": "ollama"
+}</pre><p>השאלה נשמרת יחד עם הראיות, כדי שהשלב הבא יוכל לענות על אותה שאלה ולהפנות למקורות שנבחרו. בתרגיל הזה עדיין אין קריאה ל־LLM שיוצר תשובה.</p></section>
+<section><h2>שני בונוסים למתקדמים</h2><h3>בונוס 1 — Hybrid Search וחיבור דירוגים</h3><ol><li>בנו דירוג מילולי מתוך אותם chunks: למשל מספר מילות השאלה שמופיעות בקטע, לאחר פיצול עקבי למילים. בדקו גם חיפוש מדויק של מזהה כגון HTTP 401.</li><li>שמרו בנפרד דירוג Semantic Search ודירוג מילולי. הקטעים בשני הדירוגים צריכים להשתמש באותם chunk IDs.</li><li>ממשו <code>reciprocal_rank_fusion</code> ב־bonus_ranking.py. תרומת קטע במקום rank היא <code>1/(60+rank)</code>. חברו תרומות וסדרו מחדש.</li><li>השוו שלוש שאלות: קוד שגיאה מדויק, ניסוח בעברית שאינו מופיע כלשונו במסמך, ושאלה שדורשת כמה מסמכים. הציגו מה כל דירוג מוצא ומה שילובם משנה.</li></ol><p><strong>למה זה מתקדם?</strong> צריך לטפל במזהים חסרים, בשוויון ובסולמות ציונים שונים, ואז לבדוק אם השילוב הוסיף ראיה שימושית. הדירוג המילולי הבסיסי בתרגיל אינו מימוש BM25.</p>
+<h3>בונוס 2 — Reranking ושמירת גבולות המועמדים</h3><p>ממשו <code>rerank_candidates</code>: קבלו מועמדים שכבר חזרו וציונים חדשים לכל מועמד, שנו את הסדר ושמרו טקסט ומקור. בדיקות הבונוס מספקות ציוני fixture מומצאים.</p><ol><li>בדקו מקרה שבו נוהל עדכני שהיה במקום שני עובר למקום הראשון.</li><li>דחו ציון שמפנה ל־chunk ID שאינו בין המועמדים, ודרשו ציון לכל מועמד.</li><li>בחרו שאלה שהראיה הדרושה לה חסרה ב־Top-3 הראשוני. השוו candidate pools בגודל 3 ו־8, ובדקו האם Reranking יכול בכלל לקבל את הראיה הנדרשת.</li><li>כתבו בדיקה ששומרת את הטקסט והמקור ללא שינוי גם אחרי המיון החדש.</li></ol><p><strong>למה זה מתקדם?</strong> מיון שני אינו יכול לתקן אובדן ראיה בשלב הראשון. נדרשים כיסוי מועמדים, עקיבות ושמירת חוזה הנתונים.</p><p class="note">ציוני ה־fixture בודקים את חיבור השלב ואת התנהגותו. הם אינם פלט של reranker חי ואינם מודדים איכות מודל. בתרגיל זה אין הורדה או הפעלה של מודל נוסף.</p>
+<h3>בדיקות הבונוסים</h3><pre>python check_bonus.py</pre><p>חמש הבדיקות יעברו אחרי השלמת שתי פונקציות הבונוס. אפשר לבצע בונוס אחד בלבד; שגיאות TODO בבונוס השני אינן מעידות על כשל בליבת התרגיל.</p></section>
+<section><h2>בדיקת קוד ללא מודל זמין</h2><p>אם הכנתם fixture בתרגיל 1, אפשר להעביר אותו דרך החיפוש כדי לבדוק קבצים וחוזים. זה אינו ניסוי באיכות Semantic Search:</p><pre>python search.py --index ../exercise-1-indexing/build/offline-index.json --question "בדיקת מעבר בין שלבים" --allow-fixture --output build/offline-results.json
+python inspect_results.py build/offline-results.json --html build/offline-view.html</pre><p>בפלט ובקובץ נשמר <code>mode=offline_fixture</code>. קובץ כזה צריך להישאר מסומן גם בתרגיל הבא.</p></section>
+<section><h2>תקלות נפוצות</h2><table><tr><th>הודעה</th><th>מה לבדוק?</th></tr><tr><td>אין index.json</td><td>יש להשלים את שלב embed בתרגיל 1. אם התיקיות במקום אחר, מספקים נתיב מלא עם --index.</td></tr><tr><td>TODO 1 / TODO 2</td><td>משלימים retrieval.py ומריצים check_exercise.py.</td></tr><tr><td>Installed model changed</td><td>בונים מחדש את index תרגיל 1 עם גרסת המודל המותקנת.</td></tr><tr><td>Query dimensions differ</td><td>בודקים שה־manifest והווקטורים הגיעו מאותה בניית index ושלא עורבבו ספקים או מודלים.</td></tr><tr><td>VOYAGE_API_KEY is missing</td><td>מוסיפים --ask-key, או משתמשים במשתנה הסביבה המוגדר בחשבון העבודה.</td></tr><tr><td>Fixture index requires --allow-fixture</td><td>מסלול זה דורש בחירה מפורשת ומיועד לבדיקת קוד בלבד.</td></tr></table></section>
+<section><h2>מקורות להעמקה</h2><ul><li><a href="https://docs.ollama.com/api/embed">Ollama — embeddings API</a>: יצירת query embedding.</li><li><a href="https://ai.google.dev/gemma/docs/embeddinggemma/model_card">EmbeddingGemma model card</a>: פורמט מסמך מול פורמט שאילתה.</li><li><a href="https://docs.voyageai.com/reference/embeddings-api">Voyage AI — Embeddings API</a>: מסלול embeddings בענן (מומלץ על ידי Anthropic).</li></ul></section>
+</main></html>

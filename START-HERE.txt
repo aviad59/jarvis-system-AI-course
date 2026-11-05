@@ -1,0 +1,6 @@
+Session 4 — Student package
+Open START-HERE.html first. Keep exercise folders together.
+1. exercise-1-indexing/README-HE.html
+2. exercise-2-retrieval/README-HE.html
+3. exercise-3-generation/README.html
+Teacher solutions are not included.

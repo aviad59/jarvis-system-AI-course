@@ -1,0 +1,60 @@
+<!doctype html><html lang="he" dir="rtl"><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Retrieval results</title><style>body{font:18px Arial;line-height:1.75;max-width:1000px;margin:auto;padding:26px;background:#eef2f5;color:#18313d}section{background:white;padding:24px;border-radius:12px;margin:20px 0}pre{direction:ltr;text-align:left;white-space:pre-wrap;overflow-wrap:anywhere}.text{white-space:pre-wrap}</style><h1>מה החיפוש החזיר?</h1><p>תורבחתהב הלקת םימילסמ יתמ?</p><p dir="ltr">Mode: ollama</p><p>הציון מסדר התאמה בין וקטורים. בודקים בנפרד אם הקטעים תומכים בתשובה ואם הם מהגרסה המתאימה.</p><section><h2>Rank 1</h2><p dir="ltr">Cosine Similarity: 0.203439</p><pre>{
+  &quot;document_id&quot;: &quot;OBS-2026-1028&quot;,
+  &quot;version&quot;: &quot;1.0&quot;,
+  &quot;status&quot;: &quot;point-in-time observation&quot;,
+  &quot;updated&quot;: &quot;2026-10-28&quot;,
+  &quot;source&quot;: &quot;documents/08-current-incident-snapshot.md&quot;,
+  &quot;title&quot;: &quot;תמונת מצב: עלייה בשגיאות התחברות לאחר עדכון&quot;
+}</pre><div class="text">בשלב התרגול אין מסמך שמתאר תיקון, Rollback או סיבת שורש מאושרת לאירוע הזה. המידע מספיק לתכנון בדיקה ולסיווג ראשוני לפי הנוהל התקף. הצוות צריך להשלים ראיות לפני שיקבע את הסיבה ואת השינוי המתאים.</div></section><section><h2>Rank 2</h2><p dir="ltr">Cosine Similarity: 0.201430</p><pre>{
+  &quot;document_id&quot;: &quot;OBS-2026-1028&quot;,
+  &quot;version&quot;: &quot;1.0&quot;,
+  &quot;status&quot;: &quot;point-in-time observation&quot;,
+  &quot;updated&quot;: &quot;2026-10-28&quot;,
+  &quot;source&quot;: &quot;documents/08-current-incident-snapshot.md&quot;,
+  &quot;title&quot;: &quot;תמונת מצב: עלייה בשגיאות התחברות לאחר עדכון&quot;
+}</pre><div class="text">תמונת מצב מומצאת וקבועה לתרגול. המילה ״כעת״ בשאלות על התרחיש מתייחסת ל־28 באוקטובר 2026 בשעה 09:26, ולא למועד שבו מריצים את הקוד.
+
+## הודעת הצוות
+
+״אחרי העדכון של הבוקר יש יותר שגיאות התחברות. מה כדאי לבדוק קודם, והאם היה לנו אירוע דומה?״
+
+## המידע שנאסף עד 09:26
+
+| נתון | ערך |
+|---|---|
+| תחילת פריסת Auth Service | 09:10 |
+| תחילת העלייה בשגיאות | 09:20 |
+| tenant מושפע | Cedar |
+| שיעור שגיאות Cedar | מעל 7.5% בכל אחת משש הדקות 09:20–09:26 |
+| התפלגות השגיאות ב־Cedar | 94% HTTP 401; שאר השגיאות HTTP 5xx |
+| שיעור שגיאות בשאר ה־tenants | 0.4%–0.7% |
+| זמן מסירת התראות p95 | 8 שניות, ללא שינוי נצפה |
+| אובדן מלא של גישה ל־tenant | לא נצפה |
+
+## מידע שעדיין מחכים לו
+
+גרסת Auth Service המדויקת, דוח מזהי מפתחות החתימה, זמן רענון Key Cache ותוצאת השוואת המפתחות טרם צורפו. לא צורפו נתוני ספק הזהויות על שינוי מפתח באותו בוקר.
+
+## המשך הטיפול</div></section><section><h2>Rank 3</h2><p dir="ltr">Cosine Similarity: 0.197534</p><pre>{
+  &quot;document_id&quot;: &quot;ESC-001&quot;,
+  &quot;version&quot;: &quot;1.1&quot;,
+  &quot;status&quot;: &quot;current&quot;,
+  &quot;updated&quot;: &quot;2026-10-22&quot;,
+  &quot;source&quot;: &quot;documents/07-escalation-policy.md&quot;,
+  &quot;title&quot;: &quot;סיווג אירוע והסלמה לצוות האחראי&quot;
+}</pre><div class="text">זהו נוהל מומצא לתרגול. הספים נבחרו כדי לאפשר בדיקה של תנאים, משכי זמן והפניות בין מסמכים.
+
+## ספי התחברות
+
+| סיווג ראשוני | תנאי | מי מעורב ומתי |
+|---|---|---|
+| P2 | login_error_rate מעל 5% ב־tenant כלשהו במשך חמש דקות רצופות | Identity Team בתוך עשר דקות מהגעה לסף |
+| P1 | login_error_rate מעל 20% ב־tenant כלשהו במשך עשר דקות רצופות, או אובדן מלא של גישה ל־tenant | Identity Team ו־Incident Commander מיד עם זיהוי התנאי |
+
+הבדיקה מבוצעת לפי tenant. בעת התאמה לכמה תנאים בוחרים בסיווג החמור יותר. סף של בדיוק 5% אינו עובר את התנאי ״מעל 5%״. הסיווג מתייחס לנתונים הידועים בחלון הזמן שנבדק ויכול להשתנות אם יגיע מידע נוסף.
+
+## מה כוללת פנייה לצוות
+
+תיאור קצר של ההשפעה, זמן תחילה, המדד וחלון המדידה, tenants מושפעים, סוגי שגיאות והפניות לראיות. כאשר חסר נתון הדרוש לקביעת חומרה, מציינים אותו במפורש ומבקשים להשלים אותו.
+
+## תפקידי הצוותים</div></section>

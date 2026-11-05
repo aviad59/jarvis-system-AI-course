@@ -1,0 +1,14 @@
+Exercise 2: Retrieval
+
+1. Open README-HE.html.
+2. Keep the exercise-1-indexing folder beside this folder.
+3. Complete two TODO functions in retrieval.py.
+4. Search the real index created in exercise 1. By default the vectors are loaded
+   from MongoDB (credentials: exercise-1-indexing/atlas-credentials.env):
+     python search.py --question "..."                    (your cosine/top-k code)
+     python search.py --backend atlas --question "..."    (Atlas Vector Search ranks)
+     python search.py --source file --question "..."      (offline: build/index.json)
+5. Inspect returned text and sources; keep search-results.json for exercise 3.
+
+The index determines the embeddings provider and model.
+This exercise retrieves evidence; answer generation comes next.
