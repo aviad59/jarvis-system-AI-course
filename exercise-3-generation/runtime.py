@@ -16,7 +16,7 @@ FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "clau
 
 def load_search(path):  # מקבלים נתיב לפלט Retrieval ומחזירים את החוזה לאחר בדיקה.
     data = json.loads(Path(path).read_text(encoding="utf-8"))  # פותחים את הקובץ בקידוד UTF-8 שתומך בעברית.
-    if not isinstance(data, dict) or data.get("schema_version") != 1 or data.get("mode") not in {"ollama", "voyage", "offline_fixture"}:  # בודקים את גרסת המבנה ואת מקור החיפוש.
+    if not isinstance(data, dict) or data.get("schema_version") != 1 or data.get("mode") not in {"ollama", "offline_fixture"}:  # בודקים את גרסת המבנה ואת מקור החיפוש.
         raise ValueError("Unsupported search-results schema or mode")  # קלט שאינו מתאים לחוזה נעצר לפני Generation.
     if not isinstance(data.get("question"), str) or not data["question"].strip():  # השאלה המקורית חייבת להיות מחרוזת שאינה ריקה.
         raise ValueError("question must be a nonempty string")  # מציגים במפורש שחסרה שאלת משתמש.

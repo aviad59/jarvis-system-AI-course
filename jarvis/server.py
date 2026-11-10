@@ -14,11 +14,13 @@ API
   GET  /api/runs/<id>/events?from=N   Server-Sent Events, live; resumes from N or Last-Event-ID
   POST /api/runs/<id>/cancel          stop the running stage
   POST /api/transcribe?language=he    raw audio body -> {text, ...} via local Whisper
+  POST /api/speak                     {text, language?} -> audio/wav via local MMS-TTS
 """
 import argparse  # host / port
 import json  # API bodies
 import mimetypes  # static file types
 import sys  # import paths
+import threading  # background model warm-up
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # one thread per connection (SSE stays open)
 from pathlib import Path  # static files
 from urllib.parse import parse_qs, urlparse  # query strings
@@ -27,6 +29,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # rag.py
 sys.path.insert(0, str(HERE))  # sibling modules
 import skills  # noqa: E402
+import tts  # noqa: E402
 import status  # noqa: E402
 import voice  # noqa: E402
 from runs import Busy, RunManager  # noqa: E402
@@ -46,6 +49,15 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", "application/json; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def send_audio(self, body, info):
+        self.send_response(200)
+        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("X-TTS-Info", json.dumps(info))  # ASCII only: model, language, timings
         self.end_headers()
         self.wfile.write(body)
 
@@ -118,12 +130,17 @@ class Handler(BaseHTTPRequestHandler):
                 kind = (self.headers.get("Content-Type") or "").split(";")[0]
                 suffix = {"audio/ogg": ".ogg", "audio/wav": ".wav", "audio/mp4": ".m4a", "audio/mpeg": ".mp3"}.get(kind, ".webm")
                 return self.send_json(voice.transcribe(audio, language, suffix))
+            if url.path == "/api/speak":
+                body = json.loads(raw or b"{}")
+                language = str(body.get("language") or "")[:5] or None
+                return self.send_audio(*tts.synthesize(body.get("text", ""), language))
             self.error(404, "Not found")
         except Busy as error:
             self.error(409, str(error))
         except ImportError as error:  # name the module and the interpreter: a different venv is the usual cause
+            package = {"faster_whisper": "faster-whisper", "av": "faster-whisper"}.get(error.name, error.name)
             self.error(503, f"Missing module '{error.name}' in the Python running the server ({sys.executable}). "
-                            f'Install it there: "{sys.executable}" -m pip install faster-whisper')
+                            f'Install it there: "{sys.executable}" -m pip install {package}')
         except (ValueError, TypeError) as error:
             self.error(400, str(error))
         except Exception as error:  # unexpected: report the type, keep the server alive
@@ -167,12 +184,22 @@ def make_server(host, port, data_dir=None):
     return server
 
 
+def warm_up():  # load Whisper and the TTS voices once, in the background; failures only mean a slower first use
+    for name, task in (("Whisper", lambda: voice.model() if voice.available() else None), ("MMS-TTS", tts.warm_up)):
+        try:
+            task()
+            print(f"WARM-UP: {name} ready", flush=True)
+        except Exception as error:
+            print(f"WARM-UP: {name} skipped ({type(error).__name__}: {error})", flush=True)
+
+
 def main():
     parser = argparse.ArgumentParser(description="Jarvis console for the RAG pipeline")
     parser.add_argument("--host", default="127.0.0.1", help="127.0.0.1 = this computer only")
     parser.add_argument("--port", type=int, default=8765)
     args = parser.parse_args()
     server = make_server(args.host, args.port)
+    threading.Thread(target=warm_up, daemon=True).start()  # models load while you open the page
     print(f"JARVIS console: http://{args.host}:{args.port}  (Ctrl+C to stop)", flush=True)
     try:
         server.serve_forever()

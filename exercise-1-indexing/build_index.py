@@ -4,15 +4,13 @@ prepare מפעיל את הפונקציות שבונים ב־chunking.py ושומ
 embed שולח כל chunk למודל embeddings ושומר לידו את הווקטור שהתקבל.
 """
 import argparse  # טוענים כלי עבור קריאת אפשרויות משורת הפקודה
-import getpass  # טוענים כלי עבור הקלדת מפתח בהסתרה
 import importlib.util  # טוענים כלי עבור טעינת מימוש הלומדים מקובץ
 import json  # טוענים כלי עבור קריאה וכתיבה של קבצי התוצרים
-import os  # טוענים כלי עבור קריאת משתני הסביבה בלי לשמור מפתח בקובץ
 import sys  # טוענים כלי עבור דיווח קוד סיום והודעות שגיאה
 import time  # טוענים כלי עבור מדידת משך ההכנה
 from pathlib import Path  # משתמשים בנתיבים שמאפשרים לפתוח ולשמור את קבצי התרגיל
 from index_support import (BASE, REQUIRED, digest, load_documents, validate_pieces,  # טוענים את פונקציות העזר הדרושות לשלב הנוכחי
-                           resolve_model, embed_texts, embed_voyage, fixture_vectors, validate_vectors)  # משלימים את ביטוי הנתונים של build_index תוך שמירה על המבנה המוצג
+                           resolve_model, embed_texts, fixture_vectors, validate_vectors)  # משלימים את ביטוי הנתונים של build_index תוך שמירה על המבנה המוצג
 
 
 def prepare(args):  # מכינים קטעי מקור עם metadata לפני יצירת embeddings
@@ -53,15 +51,12 @@ def prepare(args):  # מכינים קטעי מקור עם metadata לפני יצ
 
 def embed(args):  # מוסיפים embedding לכל קטע ושומרים את מאפייני המודל
     started = time.perf_counter()  # שומרים את זמן תחילת ההרצה
-    if args.provider == "voyage" and args.ask_key and not os.environ.get("VOYAGE_API_KEY"):  # בוחרים את מסלול החישוב המתאים לספק שנשמר או נבחר
-        # מקלידים בסתר; המפתח קיים רק בתהליך Python הזה ולא נשמר בקובץ.
-        os.environ["VOYAGE_API_KEY"] = getpass.getpass("Voyage AI API key (hidden): ")  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
     prepared = json.loads(Path(args.input).read_text(encoding="utf-8"))  # טוענים את הקטעים שהוכנו לפני חישוב embeddings
     if prepared.get("stage") != "chunks" or not prepared.get("records"):  # דורשים קובץ קטעים שהכנתו הסתיימה לפני יצירת embeddings
         raise ValueError("Input must be a non-empty prepared chunks file")  # עוצרים עם הסבר ברור כאשר החוזה או הקלט אינם תקינים
     records = prepared["records"]  # שומרים את רשומות הקטעים לשלב הבא
     document_format = args.document_format or ("embeddinggemma" if args.provider == "ollama" else "none")  # קובעים איזה prefix יתווסף לטקסט לפני יצירת embedding
-    requested_model = args.model or ("embeddinggemma" if args.provider == "ollama" else "voyage-3.5")  # בוחרים את שם המודל מהפקודה או מברירת המחדל של הספק
+    requested_model = args.model or "embeddinggemma"  # בוחרים את שם המודל מהפקודה או מברירת המחדל של הספק
     # Prefix המותאם ל־EmbeddingGemma מציין שהקלט הוא מסמך לאינדוקס.
     # במודל אחר בוחרים none לאחר בדיקת הוראות המודל שלו.
     texts = []  # אוספים את טקסטי הקלט למודל לפי סדר הרשומות
@@ -74,10 +69,7 @@ def embed(args):  # מוסיפים embedding לכל קטע ושומרים את �
         model, model_digest = "OFFLINE-FIXTURE-NOT-SEMANTIC", "not-a-model"  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
         vectors = fixture_vectors(texts)  # אוספים את הווקטורים שהתקבלו עבור הקלטים
     else:  # מפעילים את המסלול החלופי עבור מצב הקלט הזה
-        if args.provider == "ollama":  # בוחרים את מסלול החישוב המתאים לספק שנשמר או נבחר
-            model, model_digest = resolve_model(args.base_url, requested_model)  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
-        else:  # מפעילים את המסלול החלופי עבור מצב הקלט הזה
-            model, model_digest = requested_model, None  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
+        model, model_digest = resolve_model(args.base_url, requested_model)  # בודקים שהמודל מותקן ב־Ollama ושומרים את ה־digest שלו
         signature = {"embedding_mode": args.provider, "model": model, "model_digest": model_digest,  # בונוס 2: מה חייב להיות זהה כדי לשמור וקטור ישן
                      "document_format": document_format}  # שינוי בכל אחד מהם מבטל שימוש חוזר
         cache, reason = load_reuse_cache(args.reuse, signature)  # מפת hash של קלט ← וקטור, מתוך index קודם תואם
@@ -89,10 +81,7 @@ def embed(args):  # מוסיפים embedding לכל קטע ושומרים את �
         for start in range(0, len(missing), 8):  # עוברים לפי הסדר על start ומטפלים בכל פריט בנפרד
             positions = missing[start:start + 8]  # מיקומי הטקסטים בקבוצה הנוכחית
             batch = [texts[i] for i in positions]  # בוחרים קבוצת טקסטים קטנה לבקשה אחת
-            if args.provider == "ollama":  # בוחרים את מסלול החישוב המתאים לספק שנשמר או נבחר
-                fresh = embed_texts(args.base_url, model, batch)  # וקטורים חדשים מ־Ollama
-            else:  # מפעילים את המסלול החלופי עבור מצב הקלט הזה
-                fresh = embed_voyage(model, batch, "document")  # וקטורים חדשים מהענן
+            fresh = embed_texts(args.base_url, model, batch)  # וקטורים חדשים מ־Ollama
             for i, vector in zip(positions, fresh):  # מציבים כל וקטור במקום של הרשומה שלו
                 vectors[i] = vector  # שומרים על סדר הרשומות
             print(f"EMBEDDED: {start + len(batch)}/{len(missing)}")  # מציגים ללומד את תוצאת השלב ואת המידע הדרוש לבדיקה
@@ -189,7 +178,7 @@ def main():  # מגדירים אפשרויות הרצה ומפעילים את ה
     e = sub.add_parser("embed")  # מגדירים פקודה נפרדת לשלב בתהליך האינדוקס
     e.add_argument("--input", default="build/chunks.json")  # מגדירים אפשרות הרצה: --input
     e.add_argument("--output")  # מגדירים אפשרות הרצה: --output
-    e.add_argument("--provider", choices=("ollama", "voyage"), default="ollama")  # מגדירים אפשרות הרצה: --provider
+    e.add_argument("--provider", choices=("ollama",), default="ollama")  # מגדירים אפשרות הרצה: --provider
     e.add_argument("--model")  # מגדירים אפשרות הרצה: --model
     e.add_argument("--base-url", default="http://127.0.0.1:11434")  # מגדירים אפשרות הרצה: --base-url
     e.add_argument("--document-format", choices=("embeddinggemma", "none"))  # מגדירים אפשרות הרצה: --document-format
@@ -197,7 +186,6 @@ def main():  # מגדירים אפשרויות הרצה ומפעילים את ה
     e.add_argument("--no-atlas", action="store_true", help="Do not upload to MongoDB Atlas even if credentials exist")  # רק קובץ מקומי
     e.add_argument("--atlas-env", help="Atlas credentials file (default: atlas-credentials.env or .env in this folder)")  # קובץ הגדרות
     e.add_argument("--reuse", metavar="OLD_INDEX", help="Bonus 2: reuse vectors from a previous compatible index")  # בונוס 2  # מגדירים אפשרות הרצה: --fixture
-    e.add_argument("--ask-key", action="store_true", help="Read cloud key privately if VOYAGE_API_KEY is unset")  # מגדירים אפשרות הרצה: --ask-key
     e.set_defaults(function=embed)  # מחברים את הפקודה לפונקציה שמבצעת את השלב
     args = parser.parse_args()  # קוראים את אפשרויות ההרצה שנבחרו
     if hasattr(args, "max_chars") and args.max_chars < 100:  # בודקים שגודל הקטע או מגבלת החלוקה עומדים בחוזה התרגיל

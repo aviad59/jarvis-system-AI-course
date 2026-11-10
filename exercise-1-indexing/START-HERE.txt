@@ -5,7 +5,7 @@ Exercise 1: Indexing
 3. Build the two TODO functions in chunking.py.
 4. Prepare chunks, inspect them, then create real embeddings.
 
-Choose one embeddings route: local Ollama OR Voyage AI API cloud (Anthropic's recommended embeddings provider).
+Embeddings are computed locally with Ollama (embeddinggemma).
 Claude Code helps you write/run code. It is not the embeddings provider.
 
 The offline fixture route checks files only; its vectors are not semantic.

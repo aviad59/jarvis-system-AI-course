@@ -62,12 +62,12 @@ class JarvisServer(unittest.TestCase):
         skills.SKILLS.pop("fake", None)
         cls.tmp.cleanup()
 
-    def request(self, path, body=None, method=None):
+    def request(self, path, body=None, method=None, timeout=30):
         data = json.dumps(body).encode() if body is not None else None
         req = urllib.request.Request(self.base + path, data=data, method=method or ("POST" if data is not None else "GET"),
                                      headers={"Content-Type": "application/json"})
         try:
-            with urllib.request.urlopen(req, timeout=30) as response:
+            with urllib.request.urlopen(req, timeout=timeout) as response:
                 return response.status, response.read(), response.headers
         except urllib.error.HTTPError as error:
             return error.code, error.read(), error.headers
@@ -109,7 +109,27 @@ class JarvisServer(unittest.TestCase):
         names = {s["name"]: s for s in data}
         self.assertIn("rag", names)
         self.assertIn("status", names)
-        self.assertEqual({o["key"] for o in names["rag"]["options"]} >= {"provider", "hybrid", "top_k"}, True)
+        self.assertEqual({o["key"] for o in names["rag"]["options"]} >= {"provider", "source", "hybrid", "top_k"}, True)
+
+    def test_local_source_skips_mongodb(self):  # pure step building: nothing is run
+        import rag
+        steps = {s["id"]: s["args"] for s in rag.build_steps("q", source="local")}
+        self.assertIn("--no-atlas", steps["embed"])
+        self.assertEqual(steps["retrieve"][steps["retrieve"].index("--source") + 1], "file")
+        self.assertEqual(rag.build_steps("q"), rag.build_steps("q", source="local"))  # local is the default
+        atlas = {s["id"]: s["args"] for s in rag.build_steps("q", source="mongodb")}
+        self.assertNotIn("--no-atlas", atlas["embed"])
+        self.assertNotIn("--source", atlas["retrieve"])
+        self.assertEqual(self.json("/api/runs", {"skill": "rag", "request": {"question": "x", "source": "s3"}})[0], 400)
+
+    def test_atlas_error_is_short_and_hides_hosts(self):
+        import status
+        safe = lambda e, s: f"{type(e).__name__}: {e}"
+        timeout = type("ServerSelectionTimeoutError", (Exception,), {})("ac-x-shard-00-01.abc.mongodb.net:27017: SSL handshake failed " * 20)
+        self.assertNotIn("mongodb.net", status.atlas_error_detail(timeout, {}, safe))
+        other = status.atlas_error_detail(ValueError("bad host ac-x-shard-00-01.abc.mongodb.net:27017 " * 20), {}, safe)
+        self.assertNotIn("mongodb.net", other)
+        self.assertLessEqual(len(other), 160)
 
     def test_invalid_requests(self):
         self.assertEqual(self.json("/api/runs", {"skill": "nope", "request": {}})[0], 400)
@@ -156,17 +176,40 @@ class JarvisServer(unittest.TestCase):
         self.assertFalse(any(e["type"] == "answer" for e in events))
 
     def test_status_never_leaks_secrets(self):
-        code, raw, _ = self.request("/api/status?force=1")
+        code, raw, _ = self.request("/api/status?force=1", timeout=90)  # an unreachable Atlas takes ~30 s to time out
         self.assertEqual(code, 200)
         data = json.loads(raw)
-        self.assertEqual(set(data["systems"]), {"ollama", "atlas", "anthropic", "index", "voice"})
+        self.assertEqual(set(data["systems"]), {"ollama", "atlas", "anthropic", "index", "voice", "tts"})
         text = raw.decode("utf-8")
-        for marker in ("mongodb+srv://", "mongodb://", "sk-ant-", "password"):
+        for marker in ("mongodb+srv://", "mongodb://", "sk-ant-", "password", ".mongodb.net"):
             self.assertNotIn(marker, text)
 
     def test_transcribe_rejects_empty_audio(self):
         code, raw, _ = self.request("/api/transcribe", body=None, method="POST")
         self.assertEqual(code, 400)
+
+    def test_speak_rejects_empty_text(self):  # validated before any model loads
+        code, raw, _ = self.request("/api/speak", body={"text": "  "}, method="POST")
+        self.assertEqual(code, 400)
+        code, raw, _ = self.request("/api/speak", body={"text": "hello", "language": "xx"}, method="POST")
+        self.assertEqual(code, 400)
+
+    def test_hebrew_text_preparation(self):
+        import tts
+        self.assertEqual(tts.hebrew_number(123), "מאה עשרים ושלוש")
+        self.assertEqual(tts.hebrew_number(2025), "אלפיים עשרים וחמש")
+        self.assertEqual(tts.prepare("שגיאה 401 [c-2]", "he"), "שגיאה ארבע מאות ואחת")
+        self.assertTrue(all(len(c) <= tts.CHUNK_CHARS for c in tts.chunks("מילה " * 200)))
+
+    def test_english_inside_hebrew_is_spoken(self):  # Latin runs go to the English voice instead of being dropped
+        import tts
+        parts = tts.segments("שגיאות ב־Cedar הגיעו ל־94% HTTP 401 לפי SYS-001.", "he")
+        self.assertIn(("en", "Cedar"), parts)
+        self.assertIn(("en", "aitch tee tee pee"), parts)
+        self.assertIn(("en", "ess why ess zero zero one"), parts)
+        self.assertTrue(any(lang == "he" and "תשעים וארבע אחוז" in text for lang, text in parts))
+        self.assertEqual(tts.prepare_english("notification_delay_p95_seconds"), "notification delay p ninety five seconds")
+        self.assertEqual(tts.english_number(2026), "two thousand twenty six")
 
 
 if __name__ == "__main__":

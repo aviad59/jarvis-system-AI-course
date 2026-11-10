@@ -5,7 +5,6 @@
 import hashlib  # טוענים כלי עבור זיהוי תוכן באמצעות hash
 import json  # טוענים כלי עבור קריאה וכתיבה של קבצי התוצרים
 import math  # טוענים כלי עבור חישוב אורכי וקטורים ובדיקת מספרים סופיים
-import os  # טוענים כלי עבור קריאת משתני הסביבה בלי לשמור מפתח בקובץ
 import re  # טוענים כלי עבור פיצול טקסט וקריאת שדות המקור
 import urllib.error  # טוענים כלי עבור זיהוי שגיאת חיבור או API
 import urllib.request  # טוענים כלי עבור שליחת בקשות HTTP לספק embeddings
@@ -97,30 +96,6 @@ def embed_texts(base_url, model, texts):  # שולחים טקסטים למודל
     return vectors  # מחזירים את תוצאת embed_texts לקוד שקרא לפונקציה
 
 
-def embed_voyage(model, texts, input_type="document"):  # שולחים בקשת embeddings לענן (Voyage AI) עם מפתח שנקרא מהסביבה
-    # ל־Anthropic אין endpoint של embeddings; Anthropic ממליצה על Voyage AI למסלול הענן.
-    # המסלול בענן משתמש במפתח מהסביבה. לא כותבים או מדפיסים אותו.
-    # הפעלת הפונקציה מבצעת בקשת API שעשויה להיות בתשלום.
-    # input_type מבדיל בין מסמך לאינדוקס ("document") לבין שאלת חיפוש ("query").
-    key = os.environ.get("VOYAGE_API_KEY", "").strip()  # קוראים מפתח API מהסביבה בלי להדפיס אותו
-    if not key:  # עוצרים לפני בקשת ענן כאשר חסר מפתח API
-        raise ValueError("VOYAGE_API_KEY is missing. See the cloud setup section in README-HE.html")  # עוצרים עם הסבר ברור כאשר החוזה או הקלט אינם תקינים
-    request = urllib.request.Request(  # מכינים בקשת HTTP עם גוף JSON וכותרות נדרשות
-        "https://api.voyageai.com/v1/embeddings",  # משלימים את ביטוי הנתונים של embed_voyage תוך שמירה על המבנה המוצג
-        data=json.dumps({"model": model, "input": texts, "input_type": input_type, "truncation": False}).encode("utf-8"),  # truncation=False: קלט ארוך מדי מחזיר שגיאה במקום להיחתך בשקט
-        headers={"Content-Type": "application/json", "Authorization": "Bearer " + key})  # שומרים את headers עבור המשך הפעולה
-    try:  # מפעילים את השלב עם טיפול מרוכז בשגיאות צפויות
-        with urllib.request.urlopen(request, timeout=180) as response:  # פותחים משאב לזמן הפעולה וסוגרים אותו בסיומה
-            result = json.load(response)  # שומרים את תוצאת הפעולה לצורך אימות או המשך עיבוד
-    except urllib.error.HTTPError as error:  # מתרגמים שגיאה צפויה להודעה שמסבירה מה צריך לתקן
-        # הודעת שגיאה גולמית עלולה להכיל חלק ממפתח. מציגים רק קוד והנחיה.
-        raise ValueError(f"Voyage AI HTTP {error.code}. Check API key, model name, billing and network settings.") from None  # עוצרים עם הסבר ברור כאשר החוזה או הקלט אינם תקינים
-    except urllib.error.URLError:  # מתרגמים שגיאה צפויה להודעה שמסבירה מה צריך לתקן
-        raise ValueError("Cannot reach Voyage AI. Check network/proxy settings.") from None  # עוצרים עם הסבר ברור כאשר החוזה או הקלט אינם תקינים
-    data = sorted(result.get("data", []), key=lambda item: item["index"])  # קוראים את נתוני התוצר או תשובת ה־API
-    if [item["index"] for item in data] != list(range(len(texts))):  # בודקים שכל קלט קיבל וקטור ושסדר הרשומות בתשובה שלם
-        raise ValueError("Voyage AI returned missing or duplicate embedding indexes")  # עוצרים עם הסבר ברור כאשר החוזה או הקלט אינם תקינים
-    return [item["embedding"] for item in data]  # מחזירים את תוצאת embed_voyage לקוד שקרא לפונקציה
 
 
 def validate_vectors(vectors):  # בודקים מספר ממדים וערכים תקינים לפני שמירת הווקטורים

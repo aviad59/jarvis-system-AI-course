@@ -55,11 +55,12 @@ class Skill:
 
 class RagSkill(Skill):
     name, title = "rag", "Ask the documents"
-    description = "Index → retrieve from MongoDB → answer with citations (exercises 1–3)."
+    description = "Index → retrieve from MongoDB or the local index file → answer with citations (exercises 1–3)."
     needs_question = True
     options = [
-        {"key": "provider", "label": "Answer with", "type": "select", "choices": ["anthropic", "ollama"], "default": "anthropic"},
+        {"key": "provider", "label": "Answer with", "type": "select", "choices": ["ollama", "anthropic"], "default": "ollama"},
         {"key": "model", "label": "Model", "type": "text", "default": "", "placeholder": "default for provider"},
+        {"key": "source", "label": "Vectors from", "type": "select", "choices": ["local", "mongodb"], "default": "local"},
         {"key": "hybrid", "label": "Hybrid (BM25 + RRF)", "type": "bool", "default": False},
         {"key": "skip_index", "label": "Skip indexing", "type": "bool", "default": True},
         {"key": "exclude_superseded", "label": "Exclude superseded", "type": "bool", "default": False},
@@ -79,7 +80,7 @@ class RagSkill(Skill):
     def steps(self, request):
         return rag.build_steps(request["question"], skip_index=request["skip_index"], hybrid=request["hybrid"],
                                top_k=request["top_k"], exclude_superseded=request["exclude_superseded"],
-                               provider=request["provider"], model=request["model"] or None)
+                               provider=request["provider"], model=request["model"] or None, source=request["source"])
 
     def stages(self, request):
         return [{"id": step["id"], "title": step["title"]} for step in self.steps(request)]

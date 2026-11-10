@@ -15,7 +15,7 @@ const els = {
   autoscroll: $("autoscroll"), toast: $("toast"), boot: $("boot"), bootLines: $("boot-lines"),
 };
 const state = { skills: [], skill: null, runId: null, source: null, card: null, stageStart: {}, live: false,
-                lastAnswer: null, ended: true, recorder: null };
+                lastAnswer: null, ended: true, recorder: null, audio: null };
 
 /* ---------------- utilities ---------------- */
 function el(tag, props = {}, ...children) {   // DOM builder; text is always set as text, never as HTML
@@ -209,7 +209,7 @@ async function submit(event) {
   if (!state.ended) return toast("A run is already in progress.", "info");
   const question = els.question.value.trim();
   if (state.skill.needs_question && !question) return els.question.focus();
-  window.speechSynthesis?.cancel();
+  stopSpeaking();
   els.send.disabled = true;
   try {
     const { run_id } = await api("/api/runs", {
@@ -306,7 +306,9 @@ const HANDLERS = {
     const statusClass = e.citation_status === "source_ids_valid_not_semantic_proof" ? "ok" : e.invalid_source_ids.length ? "err" : "warn";
     const foot = el("div", { class: "answer-foot" }, el("span", { class: "badge " + statusClass, text: e.citation_status }),
       el("span", { text: `${e.provider} · ${e.model}` }), el("span", { text: `generation ${fmtSeconds(e.seconds)}` }),
-      el("span", { text: `${e.sources.length} sources sent` }));
+      el("span", { text: `${e.sources.length} sources sent` }),
+      el("button", { type: "button", class: "speak-btn", title: "Read this answer aloud",
+        onclick: () => (els.body.dataset.state === "speaking" ? stopSpeaking() : speak(e.claims.map((c) => c.text).join(" "))) }, "🔊 Speak"));
     fillCard(claims, missing, foot);
     state.lastAnswer = e.claims.map((c) => c.text).join(" ");
   },
@@ -382,13 +384,96 @@ setInterval(() => {   // live timers for running stages
   }
 }, 200);
 
-/* ---------------- voice out ---------------- */
-function speak(text) {
+/* ---------------- voice out: local MMS-TTS on the server, browser voice as fallback ---------------- */
+let speechToken = 0;   // bumps on every speak/stop, so a slow synthesis that finishes late never plays
+function stopSpeaking() {
+  speechToken++;
+  window.speechSynthesis?.cancel();
+  if (state.audio) { state.audio.pause(); URL.revokeObjectURL(state.audio.src); state.audio = null; }
+  if (els.body.dataset.state === "speaking") setState("idle");
+}
+function browserVoice(lang) {
+  return window.speechSynthesis?.getVoices().filter((v) => v.lang.toLowerCase().startsWith(lang)) || [];
+}
+const FIRST_CHUNK = 60;   // the first clip is cut short so playback starts quickly
+const SPEECH_CHUNK = 160;   // characters per clip: about 7 s of CPU synthesis for 8 s of speech
+function speechChunks(text) {   // sentences, split/merged to <= SPEECH_CHUNK; the first stays short so playback starts fast
+  const out = [];
+  for (let sentence of text.split(/(?<=[.!?;:\n])\s+/).map((s) => s.trim()).filter(Boolean)) {
+    while (sentence.length > SPEECH_CHUNK) {
+      let cut = Math.max(sentence.lastIndexOf(",", SPEECH_CHUNK), sentence.lastIndexOf(" ", SPEECH_CHUNK));
+      if (cut <= 0) cut = SPEECH_CHUNK;
+      out.push(sentence.slice(0, cut + 1).trim());
+      sentence = sentence.slice(cut + 1).trim();
+    }
+    if (!sentence) continue;
+    if (out.length > 1 && out[out.length - 1].length + sentence.length + 1 <= SPEECH_CHUNK) out[out.length - 1] += " " + sentence;
+    else out.push(sentence);
+  }
+  const first = out[0];   // a short first clip: you hear the answer start after ~3 s instead of ~10 s
+  if (first && first.length > FIRST_CHUNK) {
+    let cut = Math.max(first.lastIndexOf(",", FIRST_CHUNK), first.lastIndexOf(" ", FIRST_CHUNK));
+    if (cut > 15) out.splice(0, 1, first.slice(0, cut + 1).trim(), first.slice(cut + 1).trim());
+  }
+  return out;
+}
+async function synthesizeClip(text, lang) {   // one clip from the server's local MMS-TTS
+  const response = await fetch("/api/speak", {
+    method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, language: lang }),
+  });
+  if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "HTTP " + response.status);
+  return { url: URL.createObjectURL(await response.blob()), info: JSON.parse(response.headers.get("X-TTS-Info") || "{}") };
+}
+function playClip(url) {   // resolves when the clip ends or is stopped; rejects if the browser refuses to play
+  return new Promise((resolve, reject) => {
+    const audio = new Audio(url);
+    state.audio = audio;
+    audio.onended = audio.onpause = () => resolve();
+    audio.onerror = () => reject(new Error("The browser could not play the audio"));
+    audio.play().catch(reject);
+  });
+}
+async function speak(text) {
+  stopSpeaking();
+  const token = speechToken;
+  const lang = hasHebrew(text) ? "he" : "en";
+  // Hebrew always goes to MMS-TTS (browsers rarely ship a Hebrew voice); English only when the browser has none.
+  if (lang === "he" || !browserVoice("en").length) {
+    const parts = speechChunks(text);
+    if (!parts.length) return;
+    setState("speaking", "Preparing voice (MMS-TTS, local)");
+    let next = synthesizeClip(parts[0], lang);
+    try {
+      for (let i = 0; i < parts.length; i++) {
+        const clip = await next;
+        if (token !== speechToken) return URL.revokeObjectURL(clip.url);   // stopped while synthesizing
+        next = i + 1 < parts.length ? synthesizeClip(parts[i + 1], lang) : null;   // prepare the next sentence while this one plays
+        next?.catch(() => {});   // handled when awaited; avoids an "unhandled rejection" warning meanwhile
+        logLine(`🔊 ${i + 1}/${parts.length} ${clip.info.model} · ${clip.info.audio_seconds}s audio in ${clip.info.seconds}s`, "l-dim");
+        setState("speaking", `Sentence ${i + 1} of ${parts.length}`);
+        try { await playClip(clip.url); } finally { URL.revokeObjectURL(clip.url); }
+        if (token !== speechToken) return;
+      }
+      stopSpeaking();
+      return;
+    } catch (error) {
+      if (token !== speechToken) return;
+      stopSpeaking();
+      if (error.name === "NotAllowedError")   // autoplay policy: needs a click on the page first
+        return toast("The browser blocked audio. Click the Speak button on the answer to hear it.", "info");
+      logLine("✕ MMS-TTS failed: " + error.message, "l-err");
+      if (lang === "he" && !browserVoice("he").length)
+        return toast("Local Hebrew voice failed and the browser has no Hebrew voice: " + error.message);
+    }
+  }
+  speakInBrowser(text, lang);
+}
+function speakInBrowser(text, lang) {
   const synth = window.speechSynthesis;
   if (!synth) return setState("idle");
-  const lang = hasHebrew(text) ? "he" : "en";
+  if (!browserVoice(lang).length && lang === "he") { setState("idle"); return toast("This browser has no Hebrew voice."); }
   const utterance = new SpeechSynthesisUtterance(text.slice(0, 1200));
-  const voices = synth.getVoices().filter((v) => v.lang.toLowerCase().startsWith(lang));
+  const voices = browserVoice(lang);
   const preferred = lang === "en" ? voices.find((v) => /UK English Male|Daniel|George|Ryan/i.test(v.name)) : null;
   utterance.voice = preferred || voices[0] || null;
   utterance.lang = utterance.voice?.lang || (lang === "he" ? "he-IL" : "en-GB");
@@ -408,7 +493,7 @@ async function toggleRecording() {
   let stream;
   try { stream = await navigator.mediaDevices.getUserMedia({ audio: { echoCancellation: true, noiseSuppression: true } }); }
   catch { return toast("Microphone permission was denied."); }
-  window.speechSynthesis?.cancel();
+  stopSpeaking();
   const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
   const recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
   const chunks = [];
@@ -484,7 +569,7 @@ function init() {
   tick(); setInterval(tick, 1000);
   els.speak.checked = store.get("speak", true);
   els.lang.value = store.get("lang", "he");
-  els.speak.addEventListener("change", () => { store.set("speak", els.speak.checked); if (!els.speak.checked) window.speechSynthesis?.cancel(); });
+  els.speak.addEventListener("change", () => { store.set("speak", els.speak.checked); if (!els.speak.checked) stopSpeaking(); });
   els.lang.addEventListener("change", () => store.set("lang", els.lang.value));
   $("composer").addEventListener("submit", submit);
   els.question.addEventListener("input", autosize);

@@ -4,6 +4,7 @@ Each check returns {'ok': bool, 'label', 'detail', ...extra}. Secrets (URIs, key
 never included - only whether they exist and where they came from.
 """
 import json  # read the local index and Ollama's reply
+import re  # strip cluster hostnames from Atlas errors
 import sys  # import exercise 1's Atlas helpers
 import threading  # cache guard
 import time  # cache age
@@ -29,6 +30,13 @@ def check_ollama():
             "detail": f"{len(models)} models" + (f"; missing {', '.join(missing)}" if missing else "")}
 
 
+def atlas_error_detail(error, settings, safe_error):  # one short line, without cluster hostnames
+    if type(error).__name__ == "ServerSelectionTimeoutError":  # DNS, TLS or IP allowlist problems all end up here
+        return "cannot reach the cluster (check Atlas Network Access / your IP); Vectors from: local works without it"
+    message = re.sub(r"[\w.-]+\.mongodb\.net(:\d+)?", "<cluster>", safe_error(error, settings))
+    return message if len(message) <= 160 else message[:157] + "..."
+
+
 def check_atlas():
     if str(rag.EX1) not in sys.path:
         sys.path.append(str(rag.EX1))
@@ -49,7 +57,7 @@ def check_atlas():
         finally:
             client.close()
     except Exception as error:
-        return {"ok": False, "label": "MongoDB Atlas", "detail": atlas_upload.safe_error(error, settings)}
+        return {"ok": False, "label": "MongoDB Atlas", "detail": atlas_error_detail(error, settings, atlas_upload.safe_error)}
     return {"ok": count > 0, "label": "MongoDB Atlas", "db": settings["db"], "collection": settings["collection"],
             "manifest": manifest, "detail": f"{count} chunks in {settings['db']}.{settings['collection']}"
             + (f" · {manifest.get('model')} {manifest.get('dimensions')}d" if manifest else "")}
@@ -75,7 +83,13 @@ def check_voice():
     return voice.status()
 
 
-CHECKS = {"ollama": check_ollama, "atlas": check_atlas, "anthropic": check_anthropic, "index": check_index, "voice": check_voice}
+def check_tts():
+    import tts
+    return tts.status()
+
+
+CHECKS = {"ollama": check_ollama, "atlas": check_atlas, "anthropic": check_anthropic, "index": check_index,
+          "voice": check_voice, "tts": check_tts}
 
 
 def check_all(force=False):  # all checks in parallel, cached briefly (Atlas takes ~1-2 s)

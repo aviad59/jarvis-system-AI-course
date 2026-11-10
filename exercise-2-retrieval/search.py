@@ -12,18 +12,18 @@ import argparse  # command-line options
 import getpass  # type secrets without echoing them
 import json  # read the local index and write the results file
 import math  # validate scores returned by cosine_similarity
-import os  # read API keys / connection strings from the environment
+import os  # read connection strings from the environment
 import sys  # exit codes, error output, and access to exercise 1's Atlas helpers
 from pathlib import Path  # file paths
 from retrieval import cosine_similarity, select_top_k  # the two ranking functions students implement
-from index_support import (resolve_model, embed_texts, embed_voyage,  # embedding helpers shared with exercise 1
+from index_support import (resolve_model, embed_texts,  # embedding helpers shared with exercise 1
                            fixture_vectors, validate_vectors)
 
 EXERCISE1 = Path(__file__).resolve().parent.parent / "exercise-1-indexing"  # holds atlas_upload.py and atlas-credentials.env
 
 
 def validate_index(manifest, records):  # same checks whether the index came from a file or from the DB
-    if manifest["embedding_mode"] not in ("ollama", "voyage", "offline_fixture"):  # only providers we can embed a query with
+    if manifest["embedding_mode"] not in ("ollama", "offline_fixture"):  # only providers we can embed a query with
         raise ValueError("Unknown embedding provider in index manifest")
     if len(records) != manifest["chunk_count"] or not records:  # a partial upload or empty collection
         raise ValueError(f"Index has {len(records)} records but its manifest says chunk_count={manifest['chunk_count']}")
@@ -88,15 +88,11 @@ def query_embedding(question, manifest, args):  # embed the question in the same
         if not args.allow_fixture:  # fixture vectors are not semantic; require an explicit opt-in
             raise ValueError("Fixture index requires --allow-fixture; it cannot test semantic retrieval")
         vectors = fixture_vectors([text])
-    elif mode == "ollama":
+    else:  # ollama
         model, digest = resolve_model(args.base_url, manifest["model"])
         if digest != manifest["model_digest"]:  # different weights would produce an incompatible vector space
             raise ValueError("Installed model changed. Rebuild exercise 1 index before searching")
         vectors = embed_texts(args.base_url, model, [text])
-    else:  # voyage
-        if args.ask_key and not os.environ.get("VOYAGE_API_KEY"):
-            os.environ["VOYAGE_API_KEY"] = getpass.getpass("Voyage AI API key (hidden): ")
-        vectors = embed_voyage(manifest["model"], [text], "query")
     if validate_vectors(vectors) != manifest["dimensions"]:
         raise ValueError("Query dimensions differ from index; rebuild using a compatible model")
     return vectors[0]
@@ -197,7 +193,6 @@ def main():
                         help="local = your cosine/top-k code; atlas = Atlas Vector Search ranks on the server (requires --source db)")
     parser.add_argument("--index", default="../exercise-1-indexing/build/index.json", help="Used with --source file")
     parser.add_argument("--base-url", default="http://127.0.0.1:11434", help="Ollama server for the query embedding")
-    parser.add_argument("--ask-key", action="store_true", help="Type the Voyage AI key privately")
     parser.add_argument("--allow-fixture", action="store_true")
     parser.add_argument("--exclude-superseded", action="store_true")
     parser.add_argument("--atlas-env", help="Credentials file (default: exercise-1-indexing/atlas-credentials.env or .env)")
