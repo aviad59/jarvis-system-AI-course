@@ -416,9 +416,19 @@ body[data-state="error"] .core { filter: drop-shadow(0 0 16px rgba(255, 79, 109,
 .speak-btn:hover { background: rgba(84, 214, 255, 0.15); box-shadow: var(--glow); }
 
 /* YouTube Shorts results (shorts skill) */
-.posts { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; }
-.post { display: flex; gap: 12px; align-items: flex-start; padding: 8px; border: 1px solid var(--line); background: var(--panel); }
-.post img { width: 64px; aspect-ratio: 9 / 16; object-fit: cover; flex: none; border: 1px solid var(--line); }
-.post a { color: var(--cyan-bright); font-family: var(--font-body); font-size: 15px; text-decoration: none; overflow-wrap: anywhere; }
-.post a:hover { text-decoration: underline; }
+.shorts { display: flex; flex-wrap: wrap; gap: 14px; margin-top: 10px; align-items: flex-start; }
+.stage-col { width: min(320px, 100%); }
+.player { position: relative; width: 100%; aspect-ratio: 9 / 16; background: #000; border: 1px solid var(--line); }
+.player iframe { position: absolute; inset: 0; width: 100%; height: 100%; border: 0; }
+.poster { position: absolute; inset: 0; padding: 0; border: 0; background: #000; cursor: pointer; }
+.poster img { width: 100%; height: 100%; object-fit: cover; opacity: .85; }
+.poster:hover img { opacity: 1; }
+.play-icon { position: absolute; inset: 0; display: grid; place-items: center; font-size: 46px; color: var(--cyan-bright); text-shadow: 0 0 14px #000; }
+.player-caption { margin-top: 6px; font-family: var(--font-body); font-size: 15px; overflow-wrap: anywhere; }
+.posts { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; flex: 1 1 200px; min-width: 0; }
+.post { display: flex; gap: 10px; align-items: center; width: 100%; padding: 6px; border: 1px solid var(--line); background: var(--panel);
+  color: var(--text); font: 14px/1.4 var(--font-body); text-align: start; cursor: pointer; }
+.post:hover, .posts li.current .post { border-color: var(--cyan-bright); }
+.post img { width: 44px; aspect-ratio: 9 / 16; object-fit: cover; flex: none; }
+.post span { overflow-wrap: anywhere; }
 .post-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; color: var(--text-dim); font: 12px/1.5 var(--font-mono); }
