@@ -10,3 +10,6 @@ jarvis/data/runs/
 jarvis/data/media/
 # Generated index (contains vault notes, rebuilt by the pipeline)
 exercise-1-indexing/build/
+# Search results and answers (they quote the notes; rebuilt on every question)
+exercise-2-retrieval/build/
+exercise-3-generation/artifacts/

@@ -64,7 +64,7 @@ and the card shows the choice (`JARVIS · YOUTUBE SHORTS`, and the reason in the
 | `find me 5 youtube shorts about cooking`, `תמצא לי שורטס על בישול` | YouTube Shorts MCP · search (`5` sets the number of results) |
 | `@MrBeast`, `show me shorts from channel MrBeast`, `סרטונים מהערוץ MrBeast` | YouTube Shorts MCP · latest Shorts of the channel |
 | a YouTube link | YouTube Shorts MCP · details of that video |
-| `make a meme about monday meetings`, `תעשה לי מם על ישיבות`, `drake meme: writing tests / shipping on friday` | memes MCP · the meme in the card (Ollama writes captions unless you give them) |
+| `make a meme about monday meetings`, `תעשה לי מם על ישיבות`, `drake meme: writing tests / shipping on friday` | your notes are searched first (retrieval only), then the memes MCP makes the meme from what they say; the card names the notes used. Give your own captions to skip both; *Meme: use my notes* off = topic only |
 | `מה הצוות אוהב לאכול? תמצא לי שורטס על זה`, `find shorts about what the team likes to eat` | **notes → Shorts**: answer from the notes, turn the answer into a search (`פיצה פיתה`), then the MCP tool |
 | `system check` / `בדיקת מערכות`, `sync the vault` / `סנכרן את הכספת` | system check / vault re-index |
 | `/docs …`, `/shorts …`, `/meme …` | that skill, whatever the words |

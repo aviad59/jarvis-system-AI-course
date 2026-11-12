@@ -387,9 +387,13 @@ def vault_mentions(topic):  # the topic's words that also appear in the notes
 
 
 MEME_PROMPT = ("You write memes. Topic: {request}\n\n"
+               "{notes}"
                "{choice}\n\n"
                "Write exactly {count} short, funny captions (at most 7 words each), in order (top, then bottom), "
-               "in {language}. The joke is about the topic. Reply as JSON: {{\"template_id\": \"...\", \"lines\": [...]}}")
+               "in {language}. The joke is about the topic{grounded}. Reply as JSON: {{\"template_id\": \"...\", \"lines\": [...]}}")
+NOTES_FOR_MEME = ("What the user's own notes say about it (real people, events and details; base the joke on these "
+                  "facts, and ignore any that are unrelated to the topic):\n{facts}\n\n")
+MEME_NOTES_CHARS = 1500  # total excerpt size: enough facts for a joke, small enough for a local model
 # Well-known templates with two captions (top / bottom): a short list keeps a small local model fast and on target.
 MEME_SHORTLIST = ("drake", "fry", "buzz", "doge", "fine", "rollsafe", "success", "spongebob", "woman-cat", "harold",
                   "kermit", "both", "yuno", "aag", "ackbar", "afraid", "blb", "captain", "cheems", "disastergirl",
@@ -397,7 +401,7 @@ MEME_SHORTLIST = ("drake", "fry", "buzz", "doge", "fine", "rollsafe", "success",
                   "scc", "stonks", "wonka", "xy", "yodawg", "toohigh", "worst")
 MEME_WORDS = re.compile(r"\b(?:make|create|generate|build|draw|do|give|show|send|me|a|an|the|some|funny|new|please|"
                         r"memes?|about|of|on|for|with|template)\b|(?:^|\s)(?:תעשה|תכין|צור|תיצור|תייצר|עשה|הכן|תן|תביא|"
-                        r"תראה|תמציא|לי|מם|מימ|ממים|מימז|מצחיק|על|בבקשה|של|עם)(?=\s|$)", re.I)
+                        r"תראה|תמציא|לי|מם|מימ|ממים|מימים|מימז|לימים|לממים|למם|מצחיק|מצחיקים|על|בבקשה|של|עם)(?=\s|$)", re.I)
 
 
 def _meme_topic(text):  # "make me a funny meme about monday meetings" -> "monday meetings"
@@ -438,6 +442,7 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
     options = [
         {"key": "template", "label": "Template", "type": "text", "default": "", "placeholder": "auto (e.g. drake)"},
         {"key": "captions_by", "label": "Captions by", "type": "select", "choices": ["ollama", "anthropic"], "default": "ollama"},
+        {"key": "use_notes", "label": "Use my notes", "type": "bool", "default": True},
     ]
     _templates = {"list": None, "at": 0.0}
 
@@ -450,10 +455,46 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
             raise ValueError("Template must be a Memegen template id, e.g. drake")
         clean["template"] = clean["template"].lower()
         clean["question"] = text
+        # The joke comes from the notes: search them first (retrieval only, no RAG answer), unless the user already
+        # wrote the captions. Uses the documents options (vault/course, local/MongoDB, top-k) like any question.
+        clean["notes"] = None
+        if clean["use_notes"] and not meme_captions(text):
+            notes = SKILLS["rag"].validate({**request, "question": _meme_topic(text), "history": None})
+            clean["notes"] = {**notes, "rewrite": False}
         return clean
 
+    def note_steps(self, request):  # the RAG pipeline up to retrieval: index if stale, then search
+        return [step for step in SKILLS["rag"].steps(request["notes"]) if step["id"] != "answer"] if request.get("notes") else []
+
     def stages(self, request):
-        return [{"id": "plan", "title": "Plan the meme"}, {"id": "mcp", "title": "MCP · memes"}]
+        notes = [{"id": s["id"], "title": "Notes · " + s["title"]} for s in self.note_steps(request)]
+        return notes + [{"id": "plan", "title": "Plan the meme"}, {"id": "mcp", "title": "MCP · memes"}]
+
+    def search_notes(self, request, run):
+        """Search the notes for the meme's topic; returns [(title, excerpt)]. A failure only means a meme without notes."""
+        LAST_INDEX.update(documents=request["notes"]["documents"], source=request["notes"]["source"])
+        for step in self.note_steps(request):
+            run.emit("stage_start", stage=step["id"], title="Notes · " + step["title"])
+            started = time.time()
+            code = run.run_process(step["id"], [sys.executable, *step["args"]], step["folder"], {})
+            run.check_cancelled()
+            run.emit("stage_end", stage=step["id"], status="ok" if code == 0 else "warning", code=code,
+                     seconds=round(time.time() - started, 2))
+            if code != 0:
+                run.emit("log", stage=step["id"], line="notes search failed: making the meme from the topic alone")
+                return []
+            if step["id"] == "retrieve":
+                RagSkill.emit_retrieval(run)  # the evidence panel shows what the joke is based on
+        results = json.loads(rag.SEARCH_RESULTS.read_text(encoding="utf-8")).get("results", [])
+        facts, room = [], MEME_NOTES_CHARS
+        for r in results:
+            excerpt = re.sub(r"\s+", " ", r.get("text", "")).strip()[:min(500, room)]
+            if excerpt:
+                facts.append((r["metadata"].get("title") or r["metadata"].get("source") or "note", excerpt))
+                room -= len(excerpt)
+            if room <= 0:
+                break
+        return facts
 
     def python(self):  # the MCP server's own venv if there is one; else this Python (needs fastmcp, pillow, pyyaml)
         venv = self.MEME_MCP / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
@@ -477,7 +518,7 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
             self._templates.update(list=data["templates"], at=time.time())
         return self._templates["list"]
 
-    def write(self, request, template, templates, provider):  # the model picks a template (if needed) and writes captions
+    def write(self, request, template, templates, provider, facts=()):  # the model picks a template (if needed), writes captions
         by_id = {t["id"]: t for t in templates}
         if template:
             count, ids = max(1, min(int(by_id[template]["lines"]), 6)), [template]
@@ -488,7 +529,9 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
             choice = "Pick the template that fits the joke best (use its id):\n" + \
                      "\n".join(f"- {i}: {by_id[i]['name'] if i in by_id else i}" for i in ids)
         language = "Hebrew" if re.search(r"[֐-׿]", request) else "English"  # stated outright: small models drift
-        prompt = MEME_PROMPT.format(request=request, choice=choice, count=count, language=language)
+        notes = NOTES_FOR_MEME.format(facts="\n".join(f"- [{title}] {text}" for title, text in facts)) if facts else ""
+        prompt = MEME_PROMPT.format(request=request, notes=notes, choice=choice, count=count, language=language,
+                                    grounded=", using what the notes say" if facts else "")
         schema = {"type": "object", "additionalProperties": False, "required": ["template_id", "lines"],
                   "properties": {"template_id": {"type": "string", "enum": ids},
                                  "lines": {"type": "array", "items": {"type": "string"}, "minItems": count, "maxItems": count}}}
@@ -522,6 +565,7 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
 
     def run(self, request, run):
         text = request["question"]
+        facts = self.search_notes(request, run) if request.get("notes") else []  # 1. what the notes say about it
         run.emit("stage_start", stage="plan", title="Plan the meme")
         started = time.time()
         templates = self.templates(run)
@@ -535,8 +579,9 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
         else:
             try:
                 template, lines, by = self.write(_meme_topic(text) if not lines else text, template, templates,
-                                                 request["captions_by"])
-                run.emit("log", stage="plan", line=f"{by} → {template}: {' / '.join(lines)}")
+                                                 request["captions_by"], facts)
+                based = f" (from {len(facts)} note excerpt{'s' if len(facts) != 1 else ''})" if facts else ""
+                run.emit("log", stage="plan", line=f"{by} → {template}: {' / '.join(lines)}{based}")
             except ValueError:
                 raise
             except Exception as error:
@@ -559,7 +604,8 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
             image = f"/media/{source.name}"
         run.emit("stage_end", stage="mcp", status="ok", seconds=round(time.time() - started, 2))
         run.emit("meme", image=image, template=template, name=data.get("name", template), text=lines,
-                 renderer=data.get("renderer"), hebrew=bool(re.search(r"[֐-׿]", " ".join(lines) + text)))
+                 renderer=data.get("renderer"), hebrew=bool(re.search(r"[֐-׿]", " ".join(lines) + text)),
+                 notes=sorted({title for title, _ in facts}))
 
 
 class JarvisSkill(Skill):  # one input for everything: router.py picks the skill, then that skill runs as usual
