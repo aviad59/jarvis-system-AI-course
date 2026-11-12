@@ -25,7 +25,7 @@ ollama pull embeddinggemma
 ollama pull gemma3:4b
 python -m pip install pymongo faster-whisper
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-python -m pip install transformers
+python -m pip install transformers edge-tts
 ```
 
 Optional secrets (git-ignored, not copied here). Put them back by hand if you use them:

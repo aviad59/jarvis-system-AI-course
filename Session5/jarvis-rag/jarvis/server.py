@@ -14,13 +14,17 @@ API
   GET  /api/runs/<id>/events?from=N   Server-Sent Events, live; resumes from N or Last-Event-ID
   POST /api/runs/<id>/cancel          stop the running stage
   POST /api/transcribe?language=he    raw audio body -> {text, ...} via local Whisper
-  POST /api/speak                     {text, language?} -> audio/wav via local MMS-TTS
+  POST /api/speak                     {text, language?} -> whole clip: audio/mpeg (neural voice) or audio/wav (local MMS)
+  POST /api/speak/prepare             {text, language?} -> {id, engine}; then
+  GET  /api/speak/<id>                the clip, streamed while it is synthesized (playback starts in < 1 s)
 """
 import argparse  # host / port
 import json  # API bodies
 import mimetypes  # static file types
 import sys  # import paths
 import threading  # background model warm-up
+import time  # expiry of prepared speech
+import uuid  # speech clip IDs
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer  # one thread per connection (SSE stays open)
 from pathlib import Path  # static files
 from urllib.parse import parse_qs, urlparse  # query strings
@@ -37,6 +41,8 @@ from runs import Busy, RunManager  # noqa: E402
 
 STATIC = HERE / "static"
 MAX_JSON_BODY = 64 * 1024
+SPEECH_TTL, SPEECH_MAX = 600, 50  # prepared texts are kept 10 min (the browser may request the same clip twice)
+_speech, _speech_lock = {}, threading.Lock()
 
 
 class Handler(BaseHTTPRequestHandler):
@@ -53,9 +59,9 @@ class Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
-    def send_audio(self, body, info):
+    def send_audio(self, body, info, content_type="audio/wav"):
         self.send_response(200)
-        self.send_header("Content-Type", "audio/wav")
+        self.send_header("Content-Type", content_type)
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-store")
         self.send_header("X-TTS-Info", json.dumps(info))  # ASCII only: model, language, timings
@@ -91,6 +97,12 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(skills.describe())
             if url.path == "/api/runs":
                 return self.send_json({"active": self.manager.active_id(), "runs": self.manager.history()})
+            if parts[:2] == ["api", "speak"] and len(parts) == 3:
+                with _speech_lock:
+                    prepared = _speech.get(parts[2])
+                if not prepared:
+                    return self.error(404, "Speech clip not found")
+                return self.stream_speech(*prepared[:2])
             if parts[:2] == ["api", "runs"] and len(parts) in (3, 4):
                 run = self.manager.get(parts[2])
                 if not run:
@@ -131,10 +143,23 @@ class Handler(BaseHTTPRequestHandler):
                 kind = (self.headers.get("Content-Type") or "").split(";")[0]
                 suffix = {"audio/ogg": ".ogg", "audio/wav": ".wav", "audio/mp4": ".m4a", "audio/mpeg": ".mp3"}.get(kind, ".webm")
                 return self.send_json(voice.transcribe(audio, language, suffix))
-            if url.path == "/api/speak":
+            if url.path in ("/api/speak", "/api/speak/prepare"):
                 body = json.loads(raw or b"{}")
-                language = str(body.get("language") or "")[:5] or None
-                return self.send_audio(*tts.synthesize(body.get("text", ""), language))
+                text, language = str(body.get("text") or "").strip(), str(body.get("language") or "")[:5] or None
+                if not text:
+                    raise ValueError("No text to speak")
+                if language and language not in tts.VOICES:
+                    raise ValueError(f"Unsupported language '{language}' (supported: {', '.join(tts.VOICES)})")
+                if url.path == "/api/speak/prepare":
+                    clip_id = uuid.uuid4().hex
+                    with _speech_lock:
+                        now = time.time()
+                        for key in [k for k, v in _speech.items() if now - v[2] > SPEECH_TTL][:100] + list(_speech)[:-SPEECH_MAX]:
+                            _speech.pop(key, None)
+                        _speech[clip_id] = (text, language, now)
+                    return self.send_json({"id": clip_id, "engine": "edge" if tts.edge_ready() else "local"})
+                content_type, chunks, info = tts.speech_stream(text, language)
+                return self.send_audio(b"".join(chunks), info, content_type)
             self.error(404, "Not found")
         except Busy as error:
             self.error(409, str(error))
@@ -148,6 +173,25 @@ class Handler(BaseHTTPRequestHandler):
             self.error(500, f"{type(error).__name__}: {error}")
 
     # -- responses -----------------------------------------------------------
+    def stream_speech(self, text, language):  # send audio as it arrives; HTTP/1.0: the end of the body is the closed connection
+        try:
+            content_type, chunks, info = tts.speech_stream(text, language)
+        except ValueError as error:
+            return self.error(400, str(error))
+        except ImportError as error:
+            return self.error(503, f"Missing module '{error.name}' for the local voice ({sys.executable})")
+        except Exception as error:  # e.g. the local fallback failed too
+            return self.error(500, f"{type(error).__name__}: {error}")
+        self.send_response(200)
+        self.send_header("Content-Type", content_type)
+        self.send_header("Cache-Control", "no-store")
+        self.send_header("Accept-Ranges", "none")
+        self.send_header("X-TTS-Info", json.dumps(info))
+        self.end_headers()
+        for chunk in chunks:
+            self.wfile.write(chunk)
+            self.wfile.flush()
+
     def static(self, name):
         path = (STATIC / name).resolve()
         if path.parent != STATIC.resolve() or not path.is_file():  # no path traversal
@@ -187,10 +231,12 @@ def make_server(host, port, data_dir=None):
 
 def warm_up():  # load Whisper and the TTS voices once, in the background; failures only mean a slower first use
     whisper = lambda: [voice.model(name) for name in {voice.MODEL_NAME, voice.model_for("he")}] if voice.available() else None
-    for name, task in (("Whisper", whisper), ("MMS-TTS", tts.warm_up)):
+    tasks = [("Speech", tts.warm_up_speech), ("Whisper", whisper),
+             ("Local voice (offline fallback)", lambda: tts.warm_up() if tts.available() else None)]  # last: least urgent
+    for name, task in tasks:
         try:
-            task()
-            print(f"WARM-UP: {name} ready", flush=True)
+            result = task()
+            print(f"WARM-UP: {name} ready" + (f": {result}" if isinstance(result, str) else ""), flush=True)
         except Exception as error:
             print(f"WARM-UP: {name} skipped ({type(error).__name__}: {error})", flush=True)
 

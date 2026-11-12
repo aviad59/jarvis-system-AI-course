@@ -452,11 +452,43 @@ function playClip(url) {   // resolves when the clip ends or is stopped; rejects
     audio.play().catch(reject);
   });
 }
+async function speakStreamed(text, lang, token) {   // neural voice: one clip, played while the server streams it
+  let prepared;
+  try {
+    const response = await fetch("/api/speak/prepare", {
+      method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify({ text, language: lang }),
+    });
+    if (!response.ok) return false;
+    prepared = await response.json();
+  } catch { return false; }
+  if (token !== speechToken) return true;   // stopped meanwhile
+  if (prepared.engine !== "edge") return false;   // offline or JARVIS_TTS_ENGINE=local: sentence-by-sentence local voice
+  setState("speaking", "Voice reply");
+  const started = performance.now();
+  try {
+    const playing = playClip(`/api/speak/${prepared.id}`);
+    state.audio?.addEventListener("playing", () => logLine(`🔊 neural voice · first audio in ${((performance.now() - started) / 1000).toFixed(2)}s`, "l-dim"), { once: true });
+    await playing;
+    if (token === speechToken) stopSpeaking();
+    return true;
+  } catch (error) {
+    if (token !== speechToken) return true;
+    if (error.name === "NotAllowedError") {   // autoplay policy: needs a click on the page first
+      stopSpeaking();
+      toast("The browser blocked audio. Click the Speak button on the answer to hear it.", "info");
+      return true;
+    }
+    logLine("✕ neural voice failed: " + error.message, "l-err");
+    return false;
+  }
+}
 async function speak(text) {
   stopSpeaking();
   const token = speechToken;
   const lang = hasHebrew(text) ? "he" : "en";
-  // Hebrew always goes to MMS-TTS (browsers rarely ship a Hebrew voice); English only when the browser has none.
+  if (await speakStreamed(text, lang, token)) return;
+  if (token !== speechToken) return;
+  // Local fallback: Hebrew always goes to MMS-TTS (browsers rarely ship a Hebrew voice); English only when the browser has none.
   if (lang === "he" || !browserVoice("en").length) {
     const parts = speechChunks(text);
     if (!parts.length) return;

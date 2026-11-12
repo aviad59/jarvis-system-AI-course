@@ -35,7 +35,7 @@ ollama pull gemma3:4b
 ```
 python -m pip install pymongo faster-whisper
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu
-python -m pip install transformers
+python -m pip install transformers edge-tts
 ```
 
 > If VS Code opens the terminal with `exercise-1-indexing\.venv` activated, `pip` installs
@@ -67,7 +67,7 @@ python jarvis/server.py
 ```
 
 Expected output: `JARVIS console: http://127.0.0.1:8765  (Ctrl+C to stop)`, followed by
-`WARM-UP: Whisper ready` and `WARM-UP: MMS-TTS ready` as the voice models load in the background. Leave this terminal open. Stop the server with **Ctrl+C**.
+`WARM-UP: Speech ready: neural voice (online)`, `WARM-UP: Whisper ready` and `WARM-UP: Local voice (offline fallback) ready` as the voice models load in the background. Leave this terminal open. Stop the server with **Ctrl+C**.
 
 Open **http://127.0.0.1:8765** in your browser. The server only listens on this computer.
 
@@ -89,7 +89,7 @@ check again.
 | MongoDB Atlas | connected, chunk count > 0 | check `atlas-credentials.env` and that your IP is allowed in Atlas; fine to ignore with the default **Vectors from: local** |
 | Anthropic API | a key was found | fine to ignore when answering with Ollama |
 | Local index | `exercise-1-indexing/build/index.json` exists | uncheck **Skip indexing** and ask once to build it |
-| Whisper / MMS-TTS | voice models are available | install `faster-whisper` / `torch` + `transformers` |
+| Whisper / Speech (TTS) | voice models are available; Speech shows `neural, streamed` when online | install `faster-whisper` / `edge-tts` (+ `torch` + `transformers` for the offline voice) |
 
 ## 5. Where the vectors live: local file or MongoDB
 

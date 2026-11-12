@@ -313,6 +313,32 @@ class JarvisServer(unittest.TestCase):
         code, raw, _ = self.request("/api/speak", body={"text": "hello", "language": "xx"}, method="POST")
         self.assertEqual(code, 400)
 
+    def test_speech_streams_neural_voice_and_falls_back_to_local(self):  # no network: the engines are stubbed
+        import tts
+        saved = tts.edge_ready, tts.edge_stream, tts.synthesize
+        def neural(text, language=None):
+            yield b"ID3"
+            yield b"-mp3"
+        def offline(text, language=None):
+            raise ConnectionError("offline")
+            yield b""
+        try:
+            tts.edge_ready = lambda: True
+            tts.edge_stream = neural
+            code, data = self.json("/api/speak/prepare", {"text": "שלום, זה Jarvis", "language": "he"})
+            self.assertEqual((code, data["engine"]), (200, "edge"))
+            code, body, headers = self.request(f"/api/speak/{data['id']}")
+            self.assertEqual((code, headers["Content-Type"], body), (200, "audio/mpeg", b"ID3-mp3"))
+            self.assertEqual(self.request(f"/api/speak/{data['id']}")[1], b"ID3-mp3")  # the browser may fetch twice
+            tts.edge_stream = offline
+            tts.synthesize = lambda text, language=None: (b"RIFF-wav", {"language": "he"})
+            code, body, headers = self.request(f"/api/speak/{data['id']}")
+            self.assertEqual((code, headers["Content-Type"], body), (200, "audio/wav", b"RIFF-wav"))
+            self.assertEqual(self.request("/api/speak/unknown")[0], 404)
+        finally:
+            tts.edge_ready, tts.edge_stream, tts.synthesize = saved
+        self.assertEqual(tts.prepare_neural("**שגיאה** 401 ב-Auth [c-2] https://x.y"), "שגיאה 401 ב Auth")
+
     def test_hebrew_text_preparation(self):
         import tts
         self.assertEqual(tts.hebrew_number(123), "מאה עשרים ושלוש")

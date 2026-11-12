@@ -12,7 +12,7 @@ From the `Session5/jarvis-rag` folder, with the Ollama app running:
 ```
 python -m pip install pymongo faster-whisper     # once
 python -m pip install torch --index-url https://download.pytorch.org/whl/cpu   # once, for Hebrew speech
-python -m pip install transformers
+python -m pip install transformers edge-tts
 python jarvis/server.py
 ```
 
@@ -46,7 +46,7 @@ The Systems panel shows the watcher's state.
 
 | Area | Shows |
 |---|---|
-| Systems | Ollama + models, MongoDB Atlas chunk count, Anthropic key, local index, Whisper, MMS-TTS |
+| Systems | Ollama + models, MongoDB Atlas chunk count, Anthropic key, Obsidian vault, local index, Whisper, speech engine |
 | Protocols | Skills. *Ask the documents* = the RAG pipeline; *System check* = health report |
 | Core | The current state: standing by, listening, processing (with stage), responding |
 | Dialogue | Answers as claims with citation chips; click a chip to see the exact source chunk |
@@ -83,12 +83,22 @@ when one is available.
 | `JARVIS_WHISPER_HOTWORDS` | — | extra comma-separated vocabulary, e.g. `Cedar, Atlas, Ollama` |
 | `JARVIS_WHISPER_THREADS` | all cores | CPU threads for Whisper |
 
-Speech out: Hebrew answers are spoken by Meta's MMS-TTS (`facebook/mms-tts-heb`, ~145 MB, downloaded
-from Hugging Face on the first reply and cached), running locally on the CPU. Numbers are spelled out in
-Hebrew first, since the model only reads letters. English uses the browser's voice (MMS `mms-tts-eng` when
-the browser has none). If MMS-TTS is unavailable, Jarvis falls back to the browser voice. Override with
-`JARVIS_TTS_MODEL_HE`, `JARVIS_TTS_MODEL_EN`, and speed with `JARVIS_TTS_RATE=1.1`. The MMS weights are
-CC-BY-NC 4.0 (non-commercial).
+Speech out: answers are spoken by Microsoft's neural voices through `edge-tts`: `he-IL-AvriNeural` for Hebrew
+(including the English terms inside it) and `en-US-GuyNeural` for English. The audio is streamed to the
+browser as it is synthesized, so playback starts in about 1–2 s; a replayed answer is instant (cached).
+**This needs internet, and the spoken text is sent to Microsoft's speech service.** Set
+`JARVIS_TTS_ENGINE=local` to keep speech fully on this computer.
+
+Offline fallback: if the service can't be reached, Jarvis switches automatically to Meta's MMS-TTS running
+locally on the CPU (`facebook/mms-tts-heb` / `mms-tts-eng`, preloaded in the background at start), and tries
+the neural voice again after a minute. Numbers are spelled out in Hebrew for MMS, since it only reads letters.
+
+| Variable | Default | Effect |
+|---|---|---|
+| `JARVIS_TTS_ENGINE` | `edge` | `local` = MMS only, nothing leaves the computer |
+| `JARVIS_TTS_VOICE_HE` / `JARVIS_TTS_VOICE_EN` | `he-IL-AvriNeural` / `en-US-GuyNeural` | e.g. `he-IL-HilaNeural`, `en-GB-RyanNeural` |
+| `JARVIS_TTS_RATE` | `1.0` | speaking speed for both engines (`1.1` = 10% faster) |
+| `JARVIS_TTS_MODEL_HE` / `JARVIS_TTS_MODEL_EN` | MMS models | local fallback models (CC-BY-NC 4.0 weights) |
 
 ## Architecture
 
@@ -102,7 +112,7 @@ browser (static/)  --POST /api/runs-->  server.py --> RunManager (runs.py) --> S
 * `runs.py` – a run is an ordered list of events; live viewers follow it, finished runs are saved.
 * `status.py` – health checks (never returns URIs or keys).
 * `voice.py` – local Whisper speech-to-text.
-* `tts.py` – local MMS-TTS text-to-speech (Hebrew, English).
+* `tts.py` – text-to-speech: streamed neural voices (edge-tts), local MMS-TTS fallback (Hebrew, English).
 * `server.py` – HTTP API, SSE stream, static files (standard library only).
 
 ## Adding a skill

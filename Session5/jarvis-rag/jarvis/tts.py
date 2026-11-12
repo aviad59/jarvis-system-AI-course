@@ -54,9 +54,13 @@ def load(language):
             from transformers import AutoTokenizer, VitsModel
             torch.set_num_threads(THREADS)
             name = MODELS[language]
-            model = VitsModel.from_pretrained(name).eval()
+            try:  # cached weights first: no Hugging Face check, so it is faster and works offline
+                model, tokenizer = VitsModel.from_pretrained(name, local_files_only=True), AutoTokenizer.from_pretrained(name, local_files_only=True)
+            except OSError:  # not downloaded yet
+                model, tokenizer = VitsModel.from_pretrained(name), AutoTokenizer.from_pretrained(name)
+            model = model.eval()
             model.speaking_rate = SPEAKING_RATE
-            _models[language] = (AutoTokenizer.from_pretrained(name), model)
+            _models[language] = (tokenizer, model)
         return _models[language]
 
 
@@ -246,3 +250,137 @@ def _synthesize(text, language=None):
     info = {"language": language, "model": "+".join(MODELS[lang] for lang in sorted(needed)), "audio_seconds": round(len(samples) / rate, 2),
             "seconds": round(time.time() - started, 2)}
     return buffer.getvalue(), info
+
+
+# -- neural voices, streamed (default) ----------------------------------------------
+# Microsoft's neural voices through edge-tts: natural Hebrew (reads unvoweled text, numbers and English terms,
+# which MMS can't) and English, with the first audio in under a second. Needs internet: the spoken text is sent
+# to Microsoft's speech service. Set JARVIS_TTS_ENGINE=local to keep speech fully on this computer.
+# If the service can't be reached, Jarvis falls back to the local MMS voices automatically.
+ENGINE = os.environ.get("JARVIS_TTS_ENGINE", "edge").strip().lower()  # edge | local
+VOICES = {"he": os.environ.get("JARVIS_TTS_VOICE_HE", "he-IL-AvriNeural"),
+          "en": os.environ.get("JARVIS_TTS_VOICE_EN", "en-US-GuyNeural")}
+EDGE_RATE = f"{round((SPEAKING_RATE - 1) * 100):+d}%"
+EDGE_TIMEOUT = 5  # seconds to the first audio before falling back to the local voice
+EDGE_RETRY_AFTER = 60  # after a failure (offline), use the local voice for this long before trying again
+_edge = {"failed_at": 0.0, "error": None}
+
+
+def edge_installed():
+    try:
+        import edge_tts  # noqa: F401
+        return True
+    except ImportError:
+        return False
+
+
+def edge_ready():  # use the neural voices now?
+    return ENGINE == "edge" and edge_installed() and time.time() - _edge["failed_at"] > EDGE_RETRY_AFTER
+
+
+def prepare_neural(text):  # the neural voices read numbers, % and English themselves; only remove what must not be spoken
+    text = re.sub(r"\[[^\]]*\]", " ", str(text or ""))  # citation markers like [chunk-3]
+    text = re.sub(r"https?://\S+", " ", text)
+    text = re.sub(r"[*_`#>|~]+", " ", text)  # Markdown symbols
+    text = re.sub(r"(?<=[֐-׿])[-־](?=[A-Za-z])", " ", text)  # ב-Auth -> ב Auth: the English word is read as a word
+    return re.sub(r"\s+", " ", text).strip()[:MAX_TEXT_CHARS]
+
+
+def edge_stream(text, language=None):
+    """Yield MP3 bytes as they arrive. Raises ConnectionError before the first chunk if the service fails."""
+    import queue
+    text = prepare_neural(text)
+    if not re.search(r"\w", text):
+        raise ValueError("Nothing speakable in the text")
+    language = language or detect_language(text)
+    if language not in VOICES:
+        raise ValueError(f"Unsupported language '{language}' (supported: {', '.join(VOICES)})")
+    key = ("edge", language, text)
+    with _cache_lock:
+        cached = _cache.pop(key, None)
+        if cached:
+            _cache[key] = cached  # most recently used
+    if cached:
+        yield cached[0]
+        return
+    chunks_out, done = queue.Queue(), object()
+
+    def worker():  # edge-tts is async: run it on its own event loop and hand the bytes over through a queue
+        import asyncio
+        import edge_tts
+
+        async def produce():
+            async for chunk in edge_tts.Communicate(text, VOICES[language], rate=EDGE_RATE).stream():
+                if chunk["type"] == "audio" and chunk["data"]:
+                    chunks_out.put(chunk["data"])
+        try:
+            asyncio.run(produce())
+            chunks_out.put(done)
+        except Exception as error:
+            chunks_out.put(error)
+
+    threading.Thread(target=worker, daemon=True, name="edge-tts").start()
+    received = []
+    while True:
+        try:
+            item = chunks_out.get(timeout=30 if received else EDGE_TIMEOUT)
+        except queue.Empty:
+            item = TimeoutError("no audio from the speech service")
+        if item is done:
+            break
+        if isinstance(item, Exception):
+            if not received:  # nothing sent yet: the caller uses the local voice
+                _edge.update(failed_at=time.time(), error=type(item).__name__)
+                raise ConnectionError(f"Neural voice unavailable ({type(item).__name__})")
+            return  # failed mid-stream: end the clip here (not cached)
+        received.append(item)
+        yield item
+    _edge.update(error=None)
+    with _cache_lock:
+        _cache[key] = (b"".join(received), {"language": language, "model": VOICES[language], "engine": "edge"})
+        while len(_cache) > CACHE_SIZE:
+            _cache.pop(next(iter(_cache)))
+
+
+def speech_stream(text, language=None):
+    """(content_type, iterator of bytes, info): the neural voice streamed as MP3, else the local MMS voice as one WAV."""
+    if edge_ready():
+        stream = edge_stream(text, language)
+        try:
+            first = next(stream)  # a connection failure surfaces here, before any byte goes to the browser
+        except ConnectionError:
+            stream = None  # fall back to the local voice
+        except StopIteration:
+            raise ValueError("Nothing speakable in the text") from None
+        if stream is not None:
+            def chained():
+                yield first
+                yield from stream
+            lang = language or detect_language(prepare_neural(text))
+            return "audio/mpeg", chained(), {"engine": "edge", "model": VOICES.get(lang, ""), "language": lang}
+    wav, info = synthesize(text, language)
+    return "audio/wav", iter([wav]), {**info, "engine": "local"}
+
+
+def warm_up_speech():  # at server start: load edge-tts and open one connection; if that fails, load the local voices now
+    if edge_ready():
+        try:
+            for _ in edge_stream("שלום", "he"):
+                pass
+            return "neural voice (online)"
+        except ConnectionError:
+            pass  # offline: edge_ready() is now False for a minute, so replies go straight to MMS
+    warm_up()
+    return "MMS-TTS (local)" if available() else "no voice (install edge-tts or torch + transformers)"
+
+
+def engine_status():
+    if ENGINE == "edge" and edge_installed():
+        if edge_ready():
+            return {"ok": True, "label": "Speech (TTS)", "engine": "edge",
+                    "detail": f"neural, streamed: {VOICES['he']} / {VOICES['en']} · local MMS fallback"}
+        return {"ok": True, "label": "Speech (TTS)", "engine": "local",
+                "detail": f"neural voice unreachable ({_edge['error']}); local MMS for now, retrying in a minute"}
+    local = status()
+    hint = "" if ENGINE == "local" else " · pip install edge-tts for natural voices"
+    return {**local, "label": "Speech (TTS)", "engine": "local", "detail": "local MMS: " + local["detail"] + hint}

@@ -96,7 +96,7 @@ def check_voice():
 
 def check_tts():
     import tts
-    return tts.status()
+    return tts.engine_status()
 
 
 CHECKS = {"ollama": check_ollama, "atlas": check_atlas, "anthropic": check_anthropic, "vault": check_vault, "index": check_index,
