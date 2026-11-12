@@ -110,6 +110,7 @@ class JarvisServer(unittest.TestCase):
         names = {s["name"]: s for s in data}
         self.assertIn("rag", names)
         self.assertIn("status", names)
+        self.assertEqual({o["key"] for o in names["shorts"]["options"]}, {"mode", "limit", "details"})
         self.assertEqual({o["key"] for o in names["rag"]["options"]} >= {"provider", "source", "hybrid", "top_k"}, True)
 
     def test_local_source_skips_mongodb(self):  # pure step building: nothing is run
@@ -216,6 +217,9 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual(self.json("/api/runs", {"skill": "rag", "request": {"question": "  "}})[0], 400)
         self.assertEqual(self.json("/api/runs", {"skill": "rag", "request": {"question": "x", "top_k": 99}})[0], 400)
         self.assertEqual(self.json("/api/runs", {"skill": "rag", "request": {"question": "x", "provider": "openai"}})[0], 400)
+        self.assertEqual(self.json("/api/runs", {"skill": "shorts", "request": {"question": "  "}})[0], 400)
+        self.assertEqual(self.json("/api/runs", {"skill": "shorts", "request": {"question": "x", "mode": "tiktok"}})[0], 400)
+        self.assertEqual(self.json("/api/runs", {"skill": "shorts", "request": {"question": "x", "limit": 99}})[0], 400)
         self.assertEqual(self.request("/api/runs/does-not-exist")[0], 404)
         self.assertEqual(self.request("/api/runs/..%2f..%2fserver")[0], 404)
 

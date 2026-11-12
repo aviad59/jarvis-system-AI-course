@@ -1,0 +1,9 @@
+{
+  "mcpServers": {
+    "youtube-shorts": {
+      "type": "stdio",
+      "command": "social-mcp/.venv/Scripts/python.exe",
+      "args": ["social-mcp/server.py"]
+    }
+  }
+}

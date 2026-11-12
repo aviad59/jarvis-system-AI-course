@@ -414,3 +414,11 @@ body[data-state="error"] .core { filter: drop-shadow(0 0 16px rgba(255, 79, 109,
   border: 1px solid var(--line-strong); color: var(--cyan-bright); font: 600 11px var(--font-mono);
 }
 .speak-btn:hover { background: rgba(84, 214, 255, 0.15); box-shadow: var(--glow); }
+
+/* YouTube Shorts results (shorts skill) */
+.posts { list-style: none; margin: 10px 0 0; padding: 0; display: grid; gap: 10px; }
+.post { display: flex; gap: 12px; align-items: flex-start; padding: 8px; border: 1px solid var(--line); background: var(--panel); }
+.post img { width: 64px; aspect-ratio: 9 / 16; object-fit: cover; flex: none; border: 1px solid var(--line); }
+.post a { color: var(--cyan-bright); font-family: var(--font-body); font-size: 15px; text-decoration: none; overflow-wrap: anywhere; }
+.post a:hover { text-decoration: underline; }
+.post-meta { display: flex; flex-wrap: wrap; gap: 4px 12px; margin-top: 4px; color: var(--text-dim); font: 12px/1.5 var(--font-mono); }

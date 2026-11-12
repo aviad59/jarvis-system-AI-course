@@ -319,6 +319,21 @@ const HANDLERS = {
     fillCard(el("p", { class: "claim", dir: "auto", text: e.text }));
     state.lastAnswer = e.text;
   },
+  posts(e) {   // YouTube Shorts from the youtube-shorts MCP server
+    const num = (n) => (n == null ? null : Intl.NumberFormat("en", { notation: "compact" }).format(n));
+    const date = (d) => (d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null);
+    const items = e.posts.map((p) => el("li", { class: "post" },
+      p.thumbnail ? el("img", { src: p.thumbnail, alt: "", loading: "lazy" }) : null,
+      el("div", {},
+        el("a", { href: p.url, target: "_blank", rel: "noopener", dir: "auto", text: p.title || p.url }),
+        el("div", { class: "post-meta" }, ...[p.uploader, num(p.views) && `${num(p.views)} views`,
+          num(p.likes) && `${num(p.likes)} likes`, num(p.comments) && `${num(p.comments)} comments`, date(p.upload_date)]
+          .filter(Boolean).map((t) => el("span", { text: t }))))));
+    const head = el("p", { class: "claim", dir: "auto", text: e.posts.length
+      ? `${e.posts.length} Shorts for “${e.query}” (MCP tool: ${e.tool})` : `No Shorts found for “${e.query}”.` });
+    fillCard(head, items.length ? el("ul", { class: "posts" }, items) : null);
+    state.lastAnswer = head.textContent;
+  },
   status(e) { renderSystems(e.systems); },
   error(e) {
     fillCard(el("p", { class: "claim", text: e.message }));

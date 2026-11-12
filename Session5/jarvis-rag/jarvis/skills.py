@@ -15,8 +15,11 @@ Event types the console understands (add new ones in app.js -> handlers):
 To add a skill: subclass Skill, implement stages() and run(), and add an instance to SKILLS.
 """
 import json  # read pipeline output files
+import os  # platform check for venv paths
 import sys  # Python executable for child processes
+import tempfile  # MCP tool result file
 import time  # stage timing
+from pathlib import Path  # paths to the MCP server
 import rag  # the RAG pipeline steps and paths
 import status  # system health checks
 
@@ -181,7 +184,58 @@ class StatusSkill(Skill):
         run.emit("message", text=("All systems are ready." if not bad else "Needs attention: " + ", ".join(bad) + "."))
 
 
-SKILLS = {skill.name: skill for skill in (RagSkill(), VaultSyncSkill(), StatusSkill())}
+class ShortsSkill(Skill):  # Jarvis as an MCP client: calls the free youtube-shorts MCP server (social-mcp/) at runtime
+    name, title = "shorts", "YouTube Shorts"
+    description = "Fetch public YouTube Shorts through the youtube-shorts MCP server (free, no login). " \
+                  "Type a search query, or a channel like @MrBeast."
+    needs_question = True
+    SOCIAL_MCP = Path(__file__).resolve().parents[3] / "social-mcp"  # repo root / social-mcp
+    options = [
+        {"key": "mode", "label": "Find by", "type": "select", "choices": ["search", "channel"], "default": "search"},
+        {"key": "limit", "label": "Results", "type": "int", "default": 5, "min": 1, "max": 25},
+        {"key": "details", "label": "Likes, comments, date (slower)", "type": "bool", "default": False},
+    ]
+
+    def validate(self, request):
+        clean = super().validate(request)
+        query = str(request.get("question", "")).strip()[:200]
+        if not query:
+            raise ValueError("Type a search query or a channel (e.g. @MrBeast)")
+        clean["question"] = query
+        return clean
+
+    def stages(self, request):
+        return [{"id": "mcp", "title": "MCP · youtube-shorts"}]
+
+    def python(self):  # the MCP server's own venv (fastmcp + yt-dlp); Jarvis's Python needs neither
+        venv = self.SOCIAL_MCP / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        return str(venv) if venv.exists() else sys.executable
+
+    def run(self, request, run):
+        if request["mode"] == "channel":
+            tool, arguments = "get_youtube_shorts", {"channel": request["question"]}
+        else:
+            tool, arguments = "search_youtube_shorts", {"query": request["question"]}
+        arguments.update(limit=request["limit"], details=request["details"])
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "result.json"
+            run.emit("stage_start", stage="mcp", title="MCP · youtube-shorts")
+            started = time.time()
+            code = run.run_process("mcp", [self.python(), str(self.SOCIAL_MCP / "jarvis_client.py"), "--tool", tool,
+                                           "--args", json.dumps(arguments), "--output", str(output)],
+                                   str(self.SOCIAL_MCP), {})
+            run.check_cancelled()
+            run.emit("stage_end", stage="mcp", status="ok" if code == 0 else "error", code=code,
+                     seconds=round(time.time() - started, 2))
+            if code != 0:
+                reason = next((e["line"] for e in reversed(run.events) if e["type"] == "log" and e["stage"] == "mcp"
+                               and e["line"].startswith(("STOP:", "ERROR:"))), None)
+                raise RuntimeError("YouTube Shorts MCP call failed — " + (reason or f"exit code {code}, see the log"))
+            data = json.loads(output.read_text(encoding="utf-8"))
+        run.emit("posts", tool=tool, query=request["question"], posts=data.get("posts", []))
+
+
+SKILLS = {skill.name: skill for skill in (RagSkill(), ShortsSkill(), VaultSyncSkill(), StatusSkill())}
 
 
 def describe():  # what the console needs to draw the skill picker and its options
