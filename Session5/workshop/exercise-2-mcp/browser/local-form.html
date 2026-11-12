@@ -1,0 +1,80 @@
+<!doctype html>
+<html lang="he" dir="rtl">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta http-equiv="Content-Security-Policy" content="default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'none'; img-src 'none'; form-action 'none'">
+<title>מערכת בקשות מקומית — תרגול כיתה</title>
+<style>
+*{box-sizing:border-box}body{margin:0;background:#f5f6f8;color:#15273d;font:18px/1.65 Arial,sans-serif}main{max-width:1050px;margin:auto;padding:30px}header,section{background:white;border:1px solid #cbd5df;border-radius:12px;padding:24px;margin-bottom:24px}h1{font-size:32px;margin:0 0 12px}h2{font-size:25px;margin-top:0}.notice{background:#fff2d6;padding:12px;border-right:5px solid #b65e10}label{display:block;font-weight:bold;margin-top:15px}input,textarea{display:block;width:100%;font:inherit;border:1px solid #728398;border-radius:5px;padding:10px;background:white;color:#15273d}textarea{min-height:110px}.row{display:grid;grid-template-columns:1fr 1fr;gap:20px}button{font:inherit;border:0;border-radius:6px;background:#175c76;color:white;padding:10px 22px;margin:20px 0 0 12px;cursor:pointer}button:disabled{background:#8e9ba4;cursor:not-allowed}.danger{background:#904024}button:focus-visible,input:focus-visible,textarea:focus-visible{outline:3px solid #df930e;outline-offset:3px}.status{font-weight:bold;color:#155c3a}article{border-top:1px solid #ccd6df;padding:18px 0;overflow-wrap:anywhere}dl{display:grid;grid-template-columns:150px 1fr;gap:8px}dt{font-weight:bold}dd{margin:0;white-space:pre-wrap;overflow-wrap:anywhere}.muted{color:#536273}#preview{border:2px solid #267a95}small{font-size:16px}@media(max-width:650px){.row{grid-template-columns:1fr}main{padding:15px}dl{grid-template-columns:1fr}dd{margin-bottom:10px}}[hidden]{display:none!important}
+</style>
+<main>
+<header><h1>מערכת בקשות מקומית</h1><p>טופס המדמה מערכת ותיקה לצורך תרגול דפדפן. כל התוכן סינתטי.</p><p class="notice">הנתונים נשמרים רק באחסון המקומי של הדפדפן הזה. אין שליחה לשרת, לא נשלחת הודעה ולא נפתחת בקשה בארגון.</p></header>
+<section aria-labelledby="form-title"><h2 id="form-title">בקשה חדשה</h2><p>מלאו פרטים, בדקו תצוגה מקדימה, וקבלו אישור אנושי לפני לחיצה על שמירה.</p>
+<form id="request-form" data-testid="request-form">
+<label for="project">פרויקט *</label><input id="project" name="project" data-testid="project" required value="Cedar" maxlength="100">
+<label for="request-title">כותרת הבקשה *</label><input id="request-title" name="requesttitle" data-testid="request-title" required maxlength="200">
+<label for="details">פרטי הבקשה *</label><textarea id="details" name="details" data-testid="details" required maxlength="5000"></textarea>
+<div class="row"><div><label for="owner">אחראי/ת (רשות)</label><input id="owner" name="owner" data-testid="owner" maxlength="100"></div><div><label for="due-date">מועד יעד (רשות)</label><input type="date" id="due-date" name="duedate" data-testid="due-date"></div></div>
+<label for="source-note">פתק המקור *</label><input id="source-note" name="source_note" data-testid="source-note" required placeholder="לדוגמה: Meetings/2026-11-12-Cedar.md" maxlength="300">
+<button type="button" id="preview-button" data-testid="preview-button">הצגת טיוטה לבדיקה</button>
+<button type="submit" id="save-button" data-testid="save-button" disabled>שמירת הבקשה המקומית — רק לאחר אישור אנושי</button>
+</form><p id="status" class="status" role="status" aria-live="polite" data-testid="status"></p></section>
+<section id="preview" data-testid="preview" aria-labelledby="preview-title" hidden><h2 id="preview-title">טיוטה לפני שמירה</h2><p>זו תצוגה מקדימה בלבד. הבקשה עדיין לא נשמרה. יש לקבל אישור אנושי לפרטים המוצגים.</p><div id="preview-content"></div></section>
+<section aria-labelledby="saved-title"><h2 id="saved-title">בקשות שנשמרו בדפדפן הזה</h2><p id="empty-message">עדיין לא נשמרו בקשות.</p><div id="saved-list" data-testid="saved-list"></div><button type="button" class="danger" id="reset-button" data-testid="reset-button">איפוס נתוני אפליקציית התרגול בלבד</button><p class="muted"><small>האיפוס מוחק רק בקשות שנשמרו בטופס התרגול הזה. הוא אינו מוחק אחסון של אתרים אחרים.</small></p></section>
+</main>
+<script>
+const key = 'session5-browser-practice-requests-v1'; // מפתח ייחודי מגביל את האיפוס לנתוני אפליקציית התרגול
+const byId = id => document.getElementById(id); // מאתרים רכיב ממשק לפי מזהה יציב
+const form = byId('request-form'); // שומרים הפניה לטופס כדי לבדוק תקינות ולעקוב אחרי עריכות
+let draft = null; // הטיוטה אינה בקשה שמורה ואינה אישור אנושי
+let requests = []; // מתחילים ברשימת בקשות ריקה לפני טעינת האחסון המקומי
+try { requests = JSON.parse(localStorage.getItem(key) || '[]'); if (!Array.isArray(requests)) requests = []; } catch { byId('status').textContent = 'לא ניתן לטעון נתונים קודמים; אפשר לבדוק טיוטה, אך יש לוודא ששמירה מצליחה.'; } // קוראים רק נתוני תרגול ומציגים בעיית אחסון בלי לטעון להצלחה
+const labels = {project:'פרויקט',requesttitle:'כותרת',details:'פרטים',owner:'אחראי/ת',duedate:'מועד יעד',source_note:'פתק המקור'}; // מגדירים שמות קריאים לשדות בתצוגת הבדיקה
+function fields() { // קוראים את ערכי הטופס בלי להוסיף אחראי או מועד שלא נמסרו
+ return Object.fromEntries(Object.keys(labels).map(name => [name, form.elements.namedItem(name).value.trim()])); // מנקים רווחים בלבד ומשמרים שדות חסרים כריקים
+} // מסיימים את קריאת ערכי הטופס
+function describe(item) { // בונים תיאור בטוח מתוך טקסט ולא באמצעות הזרקת HTML
+ const dl = document.createElement('dl'); // יוצרים רשימת שדות נגישה
+ for (const [name,label] of Object.entries(labels)) { // מציגים כל שדה בסדר קבוע לבדיקה
+  const dt = document.createElement('dt'); dt.textContent = label; // מציגים את שם השדה בעברית
+  const dd = document.createElement('dd'); dd.textContent = item[name] || 'לא נקבע'; // מסמנים מידע חסר בלי להמציא פרטים
+  dl.append(dt, dd); // מצרפים את שם השדה ואת ערכו לרשימה
+ } // מסיימים את הצגת השדות
+ return dl; // מחזירים רכיב ממשק שאפשר להציג בטיוטה או בבקשה שנשמרה
+} // מסיימים את בניית התיאור
+function render() { // מציגים מחדש את הבקשות שנשמרו באפליקציה המקומית
+ byId('saved-list').replaceChildren(); // מנקים רק את התצוגה הקודמת ולא את נתוני האחסון
+ byId('empty-message').hidden = requests.length > 0; // מסתירים את הודעת הרשימה הריקה כשיש בקשות
+ for (const request of requests) { // יוצרים כרטיס לכל בקשה שמורה
+  const card = document.createElement('article'); card.dataset.testid = 'saved-request'; // מוסיפים מזהה בדיקה יציב לכרטיס
+  const heading = document.createElement('h3'); heading.textContent = request.id + ' · ' + request.requesttitle; // מציגים מזהה וכותרת לקריאה חוזרת
+  card.append(heading, describe(request)); byId('saved-list').append(card); // מציגים את כל הפרטים כולל פתק המקור
+ } // מסיימים את יצירת כרטיסי הבקשות
+} // מסיימים את עדכון הרשימה
+form.addEventListener('input', () => { draft = null; byId('save-button').disabled = true; byId('preview').hidden = true; byId('status').textContent = 'הפרטים השתנו. הציגו טיוטה חדשה לפני שמירה.'; }); // כל עריכה מבטלת את הטיוטה הקודמת כדי שלא יישמר מידע שטרם נבדק
+byId('preview-button').addEventListener('click', () => { // מאפשרים בדיקת טיוטה בלי לשמור נתונים
+ if (!form.reportValidity()) return; // עוצרים כששדה חובה חסר
+ draft = fields(); // שומרים בדיוק את הפרטים שהוצגו לבדיקה
+ if (!draft.project || !draft.requesttitle || !draft.details || !draft.source_note) { byId('status').textContent = 'יש למלא טקסט בשדות החובה.'; return; } // דוחים גם שדה שמכיל רווחים בלבד
+ byId('preview-content').replaceChildren(describe(draft)); byId('preview').hidden = false; // מציגים טיוטה נגישה ללא יצירת בקשה
+ byId('save-button').disabled = false; byId('status').textContent = 'טיוטה מוצגת לבדיקה. טרם נשמרה בקשה.'; // מאפשרים את פעולת השמירה הנפרדת לאחר בדיקת אדם
+}); // מסיימים את פעולת התצוגה המקדימה
+form.addEventListener('submit', event => { // שומרים רק בעקבות פעולת שמירה מפורשת
+ event.preventDefault(); // מונעים שליחת טופס או מעבר לכתובת אחרת
+ if (!draft || !form.reportValidity()) return; // דורשים טיוטה תקפה שנוצרה אחרי העריכה האחרונה
+ if (!window.confirm('האם התקבל אישור אנושי לשמור את הפרטים שהוצגו בטיוטה? הפעולה תשמור בקשה בדפדפן הזה בלבד.')) return; // דורשים אישור נפרד בממשק לפני שמירה מקומית
+ const request = {...draft, id:'LOCAL-' + crypto.randomUUID(), saved_at:new Date().toISOString()}; // יוצרים מזהה מקומי ייחודי וזמן שמירה
+ const next = [...requests, request]; // מכינים מצב חדש בלי לשנות את המצב הקיים לפני שמירה מוצלחת
+ try { localStorage.setItem(key, JSON.stringify(next)); } catch { byId('status').textContent = 'השמירה נכשלה. לא נוצרה בקשה שמורה.'; return; } // שומרים מקומית ועוצרים עם הודעה ברורה במקרה כשל
+ requests = next; draft = null; render(); // מעדכנים את התצוגה רק אחרי שהאחסון אישר שמירה
+ byId('save-button').disabled = true; byId('preview').hidden = true; byId('status').textContent = 'נשמרה בקשה מקומית: ' + request.id; // מציגים הוכחת שמירה עם מזהה לקריאה חוזרת
+}); // מסיימים את פעולת השמירה
+byId('reset-button').addEventListener('click', () => { // מאפשרים איפוס מכוון של סביבת התרגול
+ if (!window.confirm('למחוק את כל הבקשות באפליקציית התרגול המקומית בלבד?')) return; // מבקשים אישור מפורש לפני מחיקת נתוני התרגול
+ try { localStorage.removeItem(key); } catch { byId('status').textContent = 'איפוס האחסון נכשל; הנתונים לא נמחקו.'; return; } // מוחקים רק את המפתח של האפליקציה הזאת
+ requests = []; draft = null; render(); byId('save-button').disabled = true; byId('preview').hidden = true; // מסנכרנים את הממשק עם רשימה מקומית ריקה
+ byId('status').textContent = 'נתוני אפליקציית התרגול אופסו.'; // מדווחים שהאיפוס הושלם
+}); // מסיימים את פעולת האיפוס
+render(); // מציגים את הבקשות הקיימות עם פתיחת הדף
+</script>
+</html>
