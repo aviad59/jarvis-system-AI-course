@@ -7,3 +7,5 @@ __pycache__/
 .venv/
 # Runtime data
 jarvis/data/runs/
+# Generated index (contains vault notes, rebuilt by the pipeline)
+exercise-1-indexing/build/
