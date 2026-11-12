@@ -13,6 +13,7 @@ Everything needed to run it is in this folder.
 | `rag.py` | 1 → 2 → 3 | Runs the three steps in order (command line) |
 | `jarvis/` | Console | Web console + voice + **vault watcher** that re-indexes when notes change |
 | `../../social-mcp/` | MCP tool | **YouTube Shorts** skill: Jarvis calls the free `youtube-shorts` MCP server (no login). *Ask Jarvis* sends YouTube requests there automatically. Set it up once, see `social-mcp/README.md` |
+| `../../meme-mcp/` | MCP tool | **Memes** skill: Jarvis calls the `memes` MCP server (open-source Memegen, free; Hebrew drawn locally). *Ask Jarvis* sends "make a meme about ..." there. See `meme-mcp/README.md` |
 
 Vault: `C:\Users\maest\Documents\Obsidian Vault` by default (set `JARVIS_VAULT` to change it).
 Every note in the vault is indexed, in any folder (a new folder too); `.obsidian`, `Templates`, `Drafts`

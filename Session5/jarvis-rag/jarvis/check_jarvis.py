@@ -287,6 +287,61 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual(self.json("/api/runs", {"skill": "jarvis", "request": {"question": "find shorts"}})[0], 400)
         self.assertEqual(self.json("/api/runs", {"skill": "jarvis", "request": {"question": "  "}})[0], 400)
 
+    def test_meme_requests_route_to_the_memes_skill(self):
+        import router
+        for text in ("make a meme about monday meetings", "drake meme: writing tests / shipping on friday", "memes",
+                     "תעשה לי מם על ישיבות", "תכין מם של דרייק: לכתוב בדיקות / לשחרר בשישי", "/meme cats"):
+            self.assertEqual(router.route(text).skill, "meme", text)
+        for text, skill in (("what did we decide about the meme campaign?", "rag"), ("מה הוחלט על המם?", "rag"),
+                            ("who likes memes in the team?", "rag"), ("find shorts about memes", "shorts")):
+            self.assertEqual(router.route(text).skill, skill, text)  # questions about memes are not meme requests
+        templates = [{"id": "drake", "name": "Drakeposting", "lines": 2}, {"id": "fry", "name": "Futurama Fry", "lines": 2},
+                     {"id": "bad", "name": "Bad Luck Brian", "lines": 2}]
+        self.assertEqual(skills.meme_template("drake meme: a / b", templates), "drake")
+        self.assertEqual(skills.meme_template("a futurama fry about bugs", templates), "fry")
+        self.assertIsNone(skills.meme_template("make a meme about my bad day", templates))  # "bad" alone is a word, not a pick
+        self.assertEqual(skills.meme_captions("drake meme: writing tests / shipping on friday"), ["writing tests", "shipping on friday"])
+        self.assertEqual(skills.meme_captions('a fry meme "not sure if bug" "or feature"'), ["not sure if bug", "or feature"])
+        self.assertEqual(skills.meme_captions("make a meme about cats"), [])
+        clean = skills.SKILLS["jarvis"].validate({"question": "make a meme about cats"})
+        self.assertEqual(clean["route"]["skill"], "meme")
+        self.assertEqual([s["id"] for s in skills.SKILLS["jarvis"].stages(clean)], ["route", "plan", "mcp"])
+        self.assertEqual(self.json("/api/runs", {"skill": "meme", "request": {"question": "x", "template": "../x"}})[0], 400)
+
+    def test_ask_jarvis_runs_the_meme_skill(self):  # MCP and model stubbed: no network
+        class FakeMeme(skills.MemeSkill):
+            def run(self, request, run):
+                run.emit("stage_start", stage="plan", title="Plan the meme")
+                run.emit("stage_end", stage="plan", status="ok", seconds=0)
+                run.emit("meme", image="https://api.memegen.link/images/drake/a/b.png", template="drake", name="Drakeposting",
+                         text=["a", "b"], renderer="memegen", hebrew=False)
+        real = skills.SKILLS["meme"]
+        skills.SKILLS["meme"] = FakeMeme()
+        try:
+            self.wait_idle()
+            code, data = self.json("/api/runs", {"skill": "jarvis", "request": {"question": "drake meme: a / b"}})
+            self.assertEqual(code, 202)
+            events = self.events(data["run_id"])
+        finally:
+            skills.SKILLS["meme"] = real
+        self.assertEqual(next(e for e in events if e["type"] == "route")["skill"], "meme")
+        self.assertEqual(next(e for e in events if e["type"] == "meme")["template"], "drake")
+        self.assertEqual(events[-1]["status"], "done")
+
+    def test_media_serves_only_meme_files(self):  # locally drawn (Hebrew) memes; nothing else is reachable
+        media = server.MEDIA
+        media.mkdir(parents=True, exist_ok=True)
+        name = "0123456789abcdef.png"
+        (media / name).write_bytes(b"\x89PNG fake")
+        try:
+            code, body, headers = self.request(f"/media/{name}")
+            self.assertEqual((code, headers["Content-Type"], body), (200, "image/png", b"\x89PNG fake"))
+            for path in ("/media/../server.py", "/media/%2e%2e%5cserver.py", "/media/0123456789abcdef.py",
+                         "/media/ffffffffffffffff.png", "/media/x.png", "/media/0123456789ABCDEF.png"):
+                self.assertEqual(self.request(path)[0], 404, path)
+        finally:
+            (media / name).unlink()
+
     def test_local_source_skips_mongodb(self):  # pure step building: nothing is run
         import rag
         steps = {s["id"]: s["args"] for s in rag.build_steps("q", source="local")}
