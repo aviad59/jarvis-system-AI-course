@@ -51,11 +51,12 @@ PRONOUN = re.compile(r"(?:^|\s)(?:it|that|this|them|those|these|זה|זאת|זו
 FORCE = {"docs": "rag", "rag": "rag", "ask": "rag", "shorts": "shorts", "youtube": "shorts", "yt": "shorts",
          "meme": "meme", "memes": "meme", "status": "status", "sync": "vault_sync"}
 # "make a meme about ..." / "תעשה לי מם על ...": the meme word plus a make verb (a question about memes stays with the notes)
-MEME = re.compile(r"\bmemes?\b|(?:^|\s)(?:ה?מם|ה?מימ|ממים|מימז)(?=[\s?!.,:]|$)", re.I)
-# Speech-to-text spells "מם" / "מימז" as "מים" (water) or "לימים": a meme only with a make verb, and "מים" only
-# before "על / של / עם" ("תעשה לי מים על בצלאל"), so "תביא לי מים" stays water.
-MEME_HEARD = re.compile(r"(?:^|\s)(?:לימים|לימימ|לימז|לימימז|מימס|ממז)(?=[\s?!.,:]|$)|"
-                        r"(?:^|\s)ה?מים\s+(?:על|של|עם|בנושא)(?=\s|$)")
+MEME = re.compile(r"\bmemes?\b|(?:^|\s)(?:ה?מם|ה?מימ|ה?ממים|ה?מימים|מימז)(?=[\s?!.,:]|$)", re.I)
+# "תיצור לימים על..." (= "לי מימים", typed together): only with a make verb, since "לימים" alone means "later on"
+MEME_JOINED = re.compile(r"(?:^|\s)(?:לי|ל)(?:מם|מימ|ממים|מימים|מימז|מים)(?=[\s?!.,:]|$)")
+# Speech-to-text also writes "מם" as a separate "מים" (water): a meme only with a make verb and before "על / של / עם"
+# ("תעשה לי מים על בצלאל"), so "תביא לי מים" stays water.
+MEME_HEARD = re.compile(r"(?:^|\s)(?:מימס|ממז)(?=[\s?!.,:]|$)|(?:^|\s)ה?מים\s+(?:על|של|עם|בנושא)(?=\s|$)")
 MAKE = re.compile(r"\b(?:make|create|generate|build|draw|do|give|send|write)\b|"
                   r"(?:^|\s)(?:תעשה|תעשי|תכין|תכיני|צור|תיצור|תייצר|עשה|הכן|תן|תני|תביא|תמציא|תכתוב)(?=\s|$)", re.I)
 # A joke request is answered with a meme: "tell me a joke", "make me laugh", "תספר לי בדיחה", "תצחיק אותי".
@@ -120,7 +121,7 @@ def route(text):
     if STATUS.match(text):
         return Route("status", "", {}, "system check request")
     if (MEME.search(text) and (MAKE.search(text) or not (QUESTION.match(text) or STRONG.search(text)))) or \
-            (MEME_HEARD.search(text) and MAKE.search(text)):
+            ((MEME_JOINED.search(text) or MEME_HEARD.search(text)) and MAKE.search(text)):
         return Route("meme", text, {}, "meme request → the memes MCP server")
     if JOKE.search(text) and not STRONG.search(text) and (MAKE.search(text) or TELL.search(text) or not QUESTION.match(text)):
         return Route("meme", text, {}, "joke request → a meme from the memes MCP server")

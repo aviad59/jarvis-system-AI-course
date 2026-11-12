@@ -258,12 +258,10 @@ class JarvisServer(unittest.TestCase):
                 self.assertEqual(skills.vault_mentions("עומר"), ["עומר"])  # short, but a frequent chat participant
                 self.assertEqual(skills.vault_mentions("בישול"), [])
                 route = skills.SKILLS["jarvis"].validate({"question": "תיצור לי בדיחה על עומר ברנשטיין"})["route"]
-                self.assertEqual((route["skill"], route["request"]["question"]), ("notes_meme", "מה כתוב בפתקים על עומר ברנשטיין?"))
+                self.assertEqual((route["skill"], route["request"]["notes"]["question"]), ("meme", "עומר ברנשטיין"))
                 stages = skills.SKILLS["jarvis"].stages({"route": route})
-                self.assertEqual([s["id"] for s in stages][-2:], ["plan", "mcp"])  # the meme comes after the notes answer
-                self.assertEqual(skills.SKILLS["jarvis"].validate({"question": "תיצור לימים על עומר"})["route"]["skill"],
-                                 "notes_meme")  # speech-to-text's "לימים" = "לי מימז"
-                self.assertEqual(skills.SKILLS["jarvis"].validate({"question": "/meme עומר"})["route"]["skill"], "meme")
+                self.assertEqual([s["id"] for s in stages][-3:], ["retrieve", "plan", "mcp"])  # the notes, then the meme
+                self.assertIsNone(skills.SKILLS["jarvis"].validate({"question": "תספר לי בדיחה"})["route"]["request"]["notes"])
             finally:
                 rag.VAULT = saved_vault
                 skills._vault_words["snapshot"] = None
@@ -343,7 +341,14 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual(skills.meme_captions("make a meme about cats"), [])
         clean = skills.SKILLS["jarvis"].validate({"question": "make a meme about cats"})
         self.assertEqual(clean["route"]["skill"], "meme")
-        self.assertEqual([s["id"] for s in skills.SKILLS["jarvis"].stages(clean)], ["route", "plan", "mcp"])
+        ids = [s["id"] for s in skills.SKILLS["jarvis"].stages(clean)]
+        self.assertEqual((ids[0], ids[-3:]), ("route", ["retrieve", "plan", "mcp"]))  # the notes are searched first
+        self.assertNotIn("answer", ids)  # retrieval only: no full RAG answer before a meme
+        self.assertEqual(clean["route"]["request"]["notes"]["question"], "cats")  # the topic, not the command words
+        off = skills.SKILLS["jarvis"].validate({"question": "make a meme about cats", "use_notes": False})
+        self.assertEqual([s["id"] for s in skills.SKILLS["jarvis"].stages(off)], ["route", "plan", "mcp"])
+        own = skills.SKILLS["jarvis"].validate({"question": "drake meme: a / b"})  # captions given: nothing to look up
+        self.assertIsNone(own["route"]["request"]["notes"])
         self.assertEqual(self.json("/api/runs", {"skill": "meme", "request": {"question": "x", "template": "../x"}})[0], 400)
 
     def test_joke_requests_get_a_meme(self):  # "tell me a joke" -> the memes MCP tool
@@ -357,10 +362,45 @@ class JarvisServer(unittest.TestCase):
             self.assertEqual(router.route(text).skill, "meme", text)
         for text in ("תביא לי מים", "איפה המים?", "שתיתי מים על הבוקר"):  # water stays water
             self.assertNotEqual(router.route(text).skill, "meme", text)
-        self.assertEqual(skills.SKILLS["jarvis"].validate({"question": "תספר לי בדיחה"})["route"]["skill"], "meme")  # no subject
+        self.assertEqual(skills.SKILLS["jarvis"].validate({"question": "תספר לי בדיחה"})["route"]["skill"], "meme")
         for text, skill in (("what joke did Idan tell at the meeting?", "rag"), ("איזו בדיחה עידן סיפר בישיבה?", "rag"),
                             ("מה הבדיחה מהישיבה?", "rag"), ("find shorts of jokes", "shorts")):
             self.assertEqual(router.route(text).skill, skill, text)  # questions about a joke stay with the notes
+
+    def test_hebrew_meme_words_typed_together(self):  # "תיצור לימים על..." = "תיצור לי מימים על..."
+        import router
+        for text in ("תיצור לימים על עומר ברנשטיין", "תעשה מימים על הצוות", "תכין לממים על הישיבה"):
+            self.assertEqual(router.route(text).skill, "meme", text)
+        for text in ("לימים הוא עזב את הצוות", "תביא לי מים", "מה הוחלט על המם?"):  # "later on", "bring me water", a question
+            self.assertNotEqual(router.route(text).skill, "meme", text)
+        self.assertEqual(skills._meme_topic("תיצור לימים על עומר ברנשטיין"), "עומר ברנשטיין")
+
+    def test_meme_captions_are_written_from_the_notes(self):  # the model sees the note excerpts; no network
+        sent = {}
+
+        class Reply:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return self.body
+
+        def fake_urlopen(call, timeout=None):
+            sent.update(json.loads(call.data.decode("utf-8")))
+            return Reply(json.dumps({"message": {"content": json.dumps({"template_id": "drake", "lines": ["א", "ב"]})}}).encode())
+        templates = [{"id": "drake", "name": "Drakeposting", "lines": 2}]
+        real = skills.urllib.request.urlopen
+        skills.urllib.request.urlopen = fake_urlopen
+        try:
+            facts = [("התינוקייה", "עומר שאל אם מישהו קיבל זימון לראיון"), ("Meeting 11.11", "Omer brought pizza")]
+            template, lines, _ = skills.SKILLS["meme"].write("עומר ברנשטיין", None, templates, "ollama", facts)
+        finally:
+            skills.urllib.request.urlopen = real
+        prompt = sent["messages"][0]["content"]
+        self.assertIn("עומר שאל אם מישהו קיבל זימון לראיון", prompt)
+        self.assertIn("Omer brought pizza", prompt)
+        self.assertIn("Hebrew", prompt)
+        self.assertEqual((template, lines), ("drake", ["א", "ב"]))
+        self.assertEqual(sent["format"]["properties"]["lines"]["minItems"], 2)
 
     def test_ask_jarvis_runs_the_meme_skill(self):  # MCP and model stubbed: no network
         class FakeMeme(skills.MemeSkill):

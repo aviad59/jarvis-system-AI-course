@@ -42,7 +42,8 @@ Or a separate venv in this folder (`.venv`), which Jarvis then uses automaticall
 - **Jarvis**: *Ask Jarvis* sends "make a meme about ..." / "תעשה לי מם על ..." to the **Memes** skill
   (`Session5/jarvis-rag/jarvis/skills.py`), which runs `jarvis_client.py` to call these tools over MCP stdio.
   If you name a template and write the captions (`drake meme: writing tests / shipping on friday`) no model is needed;
-  otherwise the local Ollama model picks a template and writes the captions in your language.
+  otherwise Jarvis first searches your notes for the topic (retrieval only) and the local Ollama model writes
+  the captions from what the notes say, in your language.
 
 | Setting | Default | Meaning |
 |---|---|---|

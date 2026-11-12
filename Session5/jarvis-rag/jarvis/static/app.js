@@ -355,7 +355,8 @@ const HANDLERS = {
     const image = el("a", { class: "meme", href: e.image, target: "_blank", rel: "noopener", title: "Open the full image" },
       el("img", { src: e.image, alt: e.text.join(" / "), dir: "auto" }));
     const foot = el("div", { class: "answer-foot" }, el("span", { text: `template ${e.template}` }),
-      el("span", { text: e.renderer === "local" ? "drawn locally (Hebrew)" : "Memegen" }), el("span", { text: "MCP tool: generate_meme" }));
+      el("span", { text: e.renderer === "local" ? "drawn locally (Hebrew)" : "Memegen" }), el("span", { text: "MCP tool: generate_meme" }),
+      e.notes?.length ? el("span", { dir: "auto", text: `from your notes: ${e.notes.join(", ")}` }) : null);
     fillCard(head, image, foot);
     say(e.hebrew ? "הנה המם שלך." : "Here's your meme.");   // after the notes answer, when there is one
   },
