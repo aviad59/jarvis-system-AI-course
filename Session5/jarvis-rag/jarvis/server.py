@@ -21,6 +21,7 @@ API
 import argparse  # host / port
 import json  # API bodies
 import mimetypes  # static file types
+import re  # media file names
 import sys  # import paths
 import threading  # background model warm-up
 import time  # expiry of prepared speech
@@ -40,6 +41,7 @@ import vault_watch  # noqa: E402
 from runs import Busy, RunManager  # noqa: E402
 
 STATIC = HERE / "static"
+MEDIA = HERE / "data" / "media"  # memes drawn by the memes MCP server
 MAX_JSON_BODY = 64 * 1024
 SPEECH_TTL, SPEECH_MAX = 600, 50  # prepared texts are kept 10 min (the browser may request the same clip twice)
 _speech, _speech_lock = {}, threading.Lock()
@@ -91,6 +93,8 @@ class Handler(BaseHTTPRequestHandler):
                 return self.static("index.html")
             if parts[:1] == ["static"] and len(parts) == 2:
                 return self.static(parts[1])
+            if parts[:1] == ["media"] and len(parts) == 2:  # memes drawn locally (Hebrew) by the memes MCP server
+                return self.media(parts[1])
             if url.path == "/api/status":
                 return self.send_json(status.check_all(force=query.get("force") == ["1"]))
             if url.path == "/api/skills":
@@ -201,6 +205,20 @@ class Handler(BaseHTTPRequestHandler):
         self.send_header("Content-Type", (mimetypes.guess_type(name)[0] or "application/octet-stream") + "; charset=utf-8")
         self.send_header("Content-Length", str(len(body)))
         self.send_header("Cache-Control", "no-cache")
+        self.end_headers()
+        self.wfile.write(body)
+
+    def media(self, name):  # only <16 hex>.png from data/media: the exact names the Memes skill writes
+        if not re.fullmatch(r"[0-9a-f]{16}\.png", name):
+            return self.error(404, "Not found")
+        path = MEDIA / name
+        if not path.is_file():
+            return self.error(404, "Not found")
+        body = path.read_bytes()
+        self.send_response(200)
+        self.send_header("Content-Type", "image/png")
+        self.send_header("Content-Length", str(len(body)))
+        self.send_header("Cache-Control", "no-cache")  # same name = same text, but a re-render may look better
         self.end_headers()
         self.wfile.write(body)
 

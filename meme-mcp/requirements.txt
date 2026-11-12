@@ -1,0 +1,4 @@
+fastmcp==4.0.0
+httpx
+pillow
+pyyaml

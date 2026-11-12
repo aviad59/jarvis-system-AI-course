@@ -6,6 +6,7 @@
   route("https://youtube.com/shorts/abc123")       -> shorts, details of that one Short
   route("what does the team like to eat? find shorts about it")
   route("תמצא לי שורטס על מה שהצוות אוהב לאכול") -> combo: answer from the notes, then Shorts built from the answer
+  route("make a meme about monday meetings")       -> meme (the memes MCP server; "תעשה מם על..." too)
   route("system check") / route("בדיקת מערכות")      -> status
   route("/shorts cats") / route("/docs ...")         -> force a skill
 
@@ -42,7 +43,11 @@ NOTES = re.compile(r"\b(?:team|teams|team's|our|meetings?|projects?|notes?|vault
 CLAUSES = re.compile(r"[?!.\n]+|\s+(?:and|then)\s+(?=(?:find|show|search|get|give|bring|play)\b)|"
                      r"\s+ו(?=(?:תמצא|תחפש|תראה|תביא|תן|מצא|חפש|הראה|תציג)(?:\s|$))", re.I)
 FORCE = {"docs": "rag", "rag": "rag", "ask": "rag", "shorts": "shorts", "youtube": "shorts", "yt": "shorts",
-         "status": "status", "sync": "vault_sync"}
+         "meme": "meme", "memes": "meme", "status": "status", "sync": "vault_sync"}
+# "make a meme about ..." / "תעשה לי מם על ...": the meme word plus a make verb (a question about memes stays with the notes)
+MEME = re.compile(r"\bmemes?\b|(?:^|\s)(?:ה?מם|ה?מימ|ממים|מימז)(?=[\s?!.,:]|$)", re.I)
+MAKE = re.compile(r"\b(?:make|create|generate|build|draw|do|give|send|write)\b|"
+                  r"(?:^|\s)(?:תעשה|תעשי|תכין|תכיני|צור|תיצור|תייצר|עשה|הכן|תן|תני|תביא|תמציא|תכתוב)(?=\s|$)", re.I)
 # Filler around a Shorts query: "find me some youtube shorts about cooking please" -> "cooking"
 FILLER = re.compile(
     r"\b(?:please|can|could|would|you|me|us|some|a|an|the|few|couple|of|about|on|for|with|related|to|regarding|"
@@ -55,7 +60,7 @@ FILLER = re.compile(
 
 @dataclass
 class Route:
-    skill: str  # rag | shorts | combo | status | vault_sync
+    skill: str  # rag | shorts | combo | meme | status | vault_sync
     question: str = ""  # what the target skill receives
     options: dict = field(default_factory=dict)  # extra request values, e.g. {"mode": "channel", "limit": 5}
     reason: str = ""  # shown in the console: why this skill was chosen
@@ -96,6 +101,8 @@ def route(text):
         return Route(skill, rest, {}, f"/{forced.group(1)} → {skill}")
     if STATUS.match(text):
         return Route("status", "", {}, "system check request")
+    if MEME.search(text) and (MAKE.search(text) or not (QUESTION.match(text) or STRONG.search(text))):
+        return Route("meme", text, {}, "meme request → the memes MCP server")
     if SYNC.match(text):
         return Route("vault_sync", "", {}, "vault sync request")
     url = YOUTUBE_URL.search(text)

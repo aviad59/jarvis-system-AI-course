@@ -285,17 +285,194 @@ def fallback_query(claims):  # no model reply: the first claim, cut to a search-
     return " ".join(clean_query(claims[0]).rstrip(".").split()[:8]) if claims else ""
 
 
+MEME_PROMPT = ("You write memes. Topic: {request}\n\n"
+               "{choice}\n\n"
+               "Write exactly {count} short, funny captions (at most 7 words each), in order (top, then bottom), "
+               "in {language}. The joke is about the topic. Reply as JSON: {{\"template_id\": \"...\", \"lines\": [...]}}")
+# Well-known templates with two captions (top / bottom): a short list keeps a small local model fast and on target.
+MEME_SHORTLIST = ("drake", "fry", "buzz", "doge", "fine", "rollsafe", "success", "spongebob", "woman-cat", "harold",
+                  "kermit", "both", "yuno", "aag", "ackbar", "afraid", "blb", "captain", "cheems", "disastergirl",
+                  "grumpycat", "interesting", "khaby-lame", "morpheus", "mordor", "officespace", "philosoraptor", "pooh",
+                  "scc", "stonks", "wonka", "xy", "yodawg", "toohigh", "worst")
+MEME_WORDS = re.compile(r"\b(?:make|create|generate|build|draw|do|give|show|send|me|a|an|the|some|funny|new|please|"
+                        r"memes?|about|of|on|for|with|template)\b|(?:^|\s)(?:תעשה|תכין|צור|תיצור|תייצר|עשה|הכן|תן|תביא|"
+                        r"תראה|תמציא|לי|מם|מימ|ממים|מימז|מצחיק|על|בבקשה|של|עם)(?=\s|$)", re.I)
+
+
+def _meme_topic(text):  # "make me a funny meme about monday meetings" -> "monday meetings"
+    return re.sub(r"\s+", " ", MEME_WORDS.sub(" ", text)).strip(" :,.!?") or text
+
+
+def meme_captions(text):
+    """Captions written by the user: after a colon, split on / | or new lines; or "quoted" "parts"."""
+    quoted = re.findall(r"[\"“]([^\"”]+)[\"”]", text)
+    if quoted:
+        return [q.strip() for q in quoted if q.strip()]
+    if ":" not in text:
+        return []
+    after = text.split(":", 1)[1]
+    lines = [part.strip() for part in re.split(r"\s*(?:/|\||\n)\s*", after) if part.strip()]
+    return lines
+
+
+def meme_template(text, templates):
+    """A template the user named: "drake meme", "meme of fry", "template buzz", or a full name ("futurama fry")."""
+    lowered = text.lower()
+    by_id = {t["id"]: t for t in templates}
+    for pattern in (r"\b([a-z0-9][a-z0-9_-]*)\s+(?:memes?|template)\b", r"\b(?:template|memes?\s+(?:of|with))\s+([a-z0-9][a-z0-9_-]*)\b"):
+        for word in re.findall(pattern, lowered):
+            if word in by_id:
+                return word
+    named = [t for t in templates if len(t["name"]) > 4 and t["name"].lower() in lowered]
+    return max(named, key=lambda t: len(t["name"]))["id"] if named else None
+
+
+class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the memes MCP server (meme-mcp/)
+    name, title = "meme", "Memes"
+    description = ("Make a meme through the memes MCP server (open-source Memegen, free). Say what it's about, "
+                   "or name a template and write the captions: \"drake meme: writing tests / shipping on friday\".")
+    needs_question = True
+    MEME_MCP = Path(__file__).resolve().parents[3] / "meme-mcp"  # repo root / meme-mcp
+    MEDIA = Path(__file__).resolve().parent / "data" / "media"  # locally drawn memes, served at /media/<name>
+    options = [
+        {"key": "template", "label": "Template", "type": "text", "default": "", "placeholder": "auto (e.g. drake)"},
+        {"key": "captions_by", "label": "Captions by", "type": "select", "choices": ["ollama", "anthropic"], "default": "ollama"},
+    ]
+    _templates = {"list": None, "at": 0.0}
+
+    def validate(self, request):
+        clean = super().validate(request)
+        text = str(request.get("question", "")).strip()[:500]
+        if not text:
+            raise ValueError("Say what the meme should be about, e.g. \"make a meme about monday meetings\"")
+        if clean["template"] and not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,40}", clean["template"].lower()):
+            raise ValueError("Template must be a Memegen template id, e.g. drake")
+        clean["template"] = clean["template"].lower()
+        clean["question"] = text
+        return clean
+
+    def stages(self, request):
+        return [{"id": "plan", "title": "Plan the meme"}, {"id": "mcp", "title": "MCP · memes"}]
+
+    def python(self):  # the MCP server's own venv if there is one; else this Python (needs fastmcp, pillow, pyyaml)
+        venv = self.MEME_MCP / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
+        return str(venv) if venv.exists() else sys.executable
+
+    def call(self, run, stage, tool, arguments):  # one MCP tool call through jarvis_client.py; returns its JSON
+        with tempfile.TemporaryDirectory() as folder:
+            output = Path(folder) / "result.json"
+            code = run.run_process(stage, [self.python(), str(self.MEME_MCP / "jarvis_client.py"), "--tool", tool,
+                                           "--args", json.dumps(arguments, ensure_ascii=False), "--output", str(output)],
+                                   str(self.MEME_MCP), {})
+            run.check_cancelled()
+            data = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
+        if code != 0 or not data.get("ok"):
+            raise RuntimeError("Memes MCP call failed — " + str(data.get("error") or f"exit code {code}, see the log"))
+        return data
+
+    def templates(self, run):
+        if self._templates["list"] is None or time.time() - self._templates["at"] > 3600:
+            data = self.call(run, "plan", "list_templates", {"limit": 300})
+            self._templates.update(list=data["templates"], at=time.time())
+        return self._templates["list"]
+
+    def write(self, request, template, templates, provider):  # the model picks a template (if needed) and writes captions
+        by_id = {t["id"]: t for t in templates}
+        if template:
+            count, ids = max(1, min(int(by_id[template]["lines"]), 6)), [template]
+            choice = f"Use the template {template} ({by_id[template]['name']})."
+        else:
+            ids = [i for i in MEME_SHORTLIST if i in by_id] or ["drake"]
+            count = 2
+            choice = "Pick the template that fits the joke best (use its id):\n" + \
+                     "\n".join(f"- {i}: {by_id[i]['name'] if i in by_id else i}" for i in ids)
+        language = "Hebrew" if re.search(r"[֐-׿]", request) else "English"  # stated outright: small models drift
+        prompt = MEME_PROMPT.format(request=request, choice=choice, count=count, language=language)
+        schema = {"type": "object", "additionalProperties": False, "required": ["template_id", "lines"],
+                  "properties": {"template_id": {"type": "string", "enum": ids},
+                                 "lines": {"type": "array", "items": {"type": "string"}, "minItems": count, "maxItems": count}}}
+        model = rag.DEFAULT_MODELS[provider]
+        if provider == "anthropic":
+            key, _ = rag.find_anthropic_key()
+            if not key:
+                raise ValueError("ANTHROPIC_API_KEY is not set; choose ollama for the captions")
+            url, headers = "https://api.anthropic.com/v1/messages", {"x-api-key": key, "anthropic-version": "2026-10-21"}
+            payload = {"model": model, "max_tokens": 300, "messages": [{"role": "user", "content": prompt}],
+                       "output_config": {"format": {"type": "json_schema", "schema": schema}}}
+        else:
+            url, headers = "http://localhost:11434/api/chat", {}
+            payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "format": schema,
+                       "stream": False, "options": {"temperature": 0.8, "num_predict": 160}}
+        call = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
+                                      headers={"Content-Type": "application/json", **headers}, method="POST")
+        with urllib.request.urlopen(call, timeout=120) as response:
+            reply = json.loads(response.read().decode("utf-8"))
+        text = ("".join(b.get("text", "") for b in reply.get("content", []) if b.get("type") == "text")
+                if provider == "anthropic" else reply.get("message", {}).get("content", ""))
+        plan = json.loads(text)
+        lines = [str(line).strip() for line in plan.get("lines", [])][:count]
+        lines += [""] * (count - len(lines))  # one entry per text box, even if the model gave fewer
+        if not any(lines):
+            raise ValueError("The model wrote no captions; try again or write them: \"drake meme: top / bottom\"")
+        chosen = template or str(plan.get("template_id", "")).strip().lower()
+        if chosen not in ids:
+            chosen = ids[0]
+        return chosen, lines, f"{provider} · {model}"
+
+    def run(self, request, run):
+        text = request["question"]
+        run.emit("stage_start", stage="plan", title="Plan the meme")
+        started = time.time()
+        templates = self.templates(run)
+        known = {t["id"] for t in templates}
+        if request["template"] and request["template"] not in known:
+            raise ValueError(f"Unknown template {request['template']!r}; ask for \"list meme templates\" ideas, e.g. drake")
+        template = request["template"] or meme_template(text, templates)
+        lines = meme_captions(text)
+        if template and lines:
+            run.emit("log", stage="plan", line=f"template {template} and captions from your words (no model needed)")
+        else:
+            try:
+                template, lines, by = self.write(_meme_topic(text) if not lines else text, template, templates,
+                                                 request["captions_by"])
+                run.emit("log", stage="plan", line=f"{by} → {template}: {' / '.join(lines)}")
+            except ValueError:
+                raise
+            except Exception as error:
+                if not lines:
+                    raise RuntimeError(f"Couldn't write captions ({type(error).__name__}: is Ollama running?). "
+                                       "Write them yourself: \"drake meme: top text / bottom text\"") from None
+                template = template or ("drake" if len(lines) == 2 else "fry")
+        run.check_cancelled()
+        run.emit("stage_end", stage="plan", status="ok", seconds=round(time.time() - started, 2))
+        run.emit("stage_start", stage="mcp", title="MCP · memes")
+        started = time.time()
+        data = self.call(run, "mcp", "generate_meme", {"template_id": template, "text_lines": lines})
+        image = data.get("url")
+        if data.get("file"):  # Hebrew: drawn locally by the MCP server; Jarvis serves a copy from its media folder
+            source = Path(data["file"])
+            if not re.fullmatch(r"[0-9a-f]{16}\.png", source.name) or not source.is_file():
+                raise RuntimeError("The memes MCP server returned an unexpected file")
+            self.MEDIA.mkdir(parents=True, exist_ok=True)
+            (self.MEDIA / source.name).write_bytes(source.read_bytes())
+            image = f"/media/{source.name}"
+        run.emit("stage_end", stage="mcp", status="ok", seconds=round(time.time() - started, 2))
+        run.emit("meme", image=image, template=template, name=data.get("name", template), text=lines,
+                 renderer=data.get("renderer"), hebrew=bool(re.search(r"[֐-׿]", " ".join(lines) + text)))
+
+
 class JarvisSkill(Skill):  # one input for everything: router.py picks the skill, then that skill runs as usual
     name, title = "jarvis", "Ask Jarvis"
     description = ("Ask anything: questions go to your documents, YouTube requests (\"find shorts about cooking\", "
-                   "@channel, a YouTube link) go to the youtube-shorts MCP server, \"system check\" checks the systems. "
-                   "Start with /docs or /shorts to choose yourself.")
+                   "@channel, a YouTube link) go to the youtube-shorts MCP server, \"make a meme about ...\" goes to the memes "
+                   "MCP server, \"system check\" checks the systems. Start with /docs, /shorts or /meme to choose yourself.")
     needs_question = True
 
     @property
     def options(self):  # the documents options plus the Shorts ones; each target reads only its own keys
         shorts = [dict(o, label="Shorts: " + o["label"].lower()) for o in SKILLS["shorts"].options if o["key"] != "mode"]
-        return SKILLS["rag"].options + shorts
+        memes = [dict(o, label="Meme: " + o["label"].lower()) for o in SKILLS["meme"].options]
+        return SKILLS["rag"].options + shorts + memes
 
     def validate(self, request):
         clean = super().validate(request)
@@ -359,7 +536,7 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
         SKILLS["shorts"].run({**target["shorts"], "question": query}, run)  # 3. the MCP tool
 
 
-SKILLS = {skill.name: skill for skill in (JarvisSkill(), RagSkill(), ShortsSkill(), VaultSyncSkill(), StatusSkill())}
+SKILLS = {skill.name: skill for skill in (JarvisSkill(), RagSkill(), ShortsSkill(), MemeSkill(), VaultSyncSkill(), StatusSkill())}
 
 
 def describe():  # what the console needs to draw the skill picker and its options

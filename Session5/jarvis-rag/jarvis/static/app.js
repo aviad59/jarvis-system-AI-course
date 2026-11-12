@@ -362,6 +362,15 @@ const HANDLERS = {
       : `I found ${e.posts.length} ${channel ? "latest Shorts from" : "Shorts for"} ${e.query}. Here's the first one${title}.`);
     state.pendingVideo = () => show(posts[0], true);   // played after the spoken answer (run_end)
   },
+  meme(e) {   // a meme from the memes MCP server: Memegen's URL, or /media/... when drawn locally (Hebrew)
+    const head = el("p", { class: "claim", dir: "auto", text: `${e.name} · ${e.text.join(" / ")}` });
+    const image = el("a", { class: "meme", href: e.image, target: "_blank", rel: "noopener", title: "Open the full image" },
+      el("img", { src: e.image, alt: e.text.join(" / "), dir: "auto" }));
+    const foot = el("div", { class: "answer-foot" }, el("span", { text: `template ${e.template}` }),
+      el("span", { text: e.renderer === "local" ? "drawn locally (Hebrew)" : "Memegen" }), el("span", { text: "MCP tool: generate_meme" }));
+    fillCard(head, image, foot);
+    state.lastAnswer = e.hebrew ? "הנה המם שלך." : "Here's your meme.";
+  },
   status(e) { renderSystems(e.systems); },
   error(e) {
     fillCard(el("p", { class: "claim", text: e.message }));
@@ -395,7 +404,7 @@ const HANDLERS = {
     }
   },
 };
-const SPOKEN = new Set(["answer", "message", "posts"]);   // events that carry the reply
+const SPOKEN = new Set(["answer", "message", "posts", "meme"]);   // events that carry the reply
 function handle(event) {
   const handler = HANDLERS[event.type];
   if (handler) handler(event);
