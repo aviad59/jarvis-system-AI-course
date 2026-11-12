@@ -382,20 +382,24 @@ const HANDLERS = {
     if (!live) return setState("idle");
     if (e.status === "error") { setState("error"); setTimeout(() => els.body.dataset.state === "error" && setState("idle"), 6000); return; }
     const video = e.status === "done" ? state.pendingVideo : null;   // Shorts: speak the answer first, then play the video
-    state.pendingVideo = null;
-    if (e.status === "done" && els.speak.checked && state.lastAnswer) {
+    const reply = state.reply;   // the spoken answer already started when the answer arrived (see handle)
+    state.pendingVideo = state.reply = null;
+    if (reply) {
       const run = state.runId;
-      speak(state.lastAnswer).then(() => { if (video && state.runId === run) video(); });
+      if (video) reply.then(() => { if (state.runId === run) video(); });
     } else {
       setState("idle");
       video?.();
     }
   },
 };
+const SPOKEN = new Set(["answer", "message", "posts"]);   // events that carry the reply
 function handle(event) {
   const handler = HANDLERS[event.type];
   if (handler) handler(event);
-  if (event.type === "run_start") { state.lastAnswer = null; state.pendingVideo = null; }
+  if (event.type === "run_start") { state.lastAnswer = null; state.pendingVideo = null; state.reply = null; }
+  // Speak the moment the answer exists, while the run is still wrapping up; never for replayed history.
+  if (SPOKEN.has(event.type) && state.live && els.speak.checked && state.lastAnswer) state.reply = speak(state.lastAnswer);
   else if (!state.live) state.ended = true;
 }
 function videoId(post) {   // YouTube video ID from the MCP result (id, or the /shorts/ or ?v= URL)
@@ -444,10 +448,49 @@ setInterval(() => {   // live timers for running stages
 
 /* ---------------- voice out: local MMS-TTS on the server, browser voice as fallback ---------------- */
 let speechToken = 0;   // bumps on every speak/stop, so a slow synthesis that finishes late never plays
+// Replies start by themselves (no Speak click). Browsers only let a page play sound after you have
+// interacted with it, so every reply plays through ONE audio element that is unlocked by your first
+// click or key press (the mic, Enter...). If a browser still holds the sound, it plays on your next
+// click or key press anywhere on the page.
+const player = new Audio();
+player.preload = "auto";
+let audioUnlocked = false;
+function silence() {   // 50 ms of silent 8 kHz WAV, used once to unlock the player
+  const samples = 400, bytes = new DataView(new ArrayBuffer(44 + samples));
+  const text = (at, s) => [...s].forEach((c, i) => bytes.setUint8(at + i, c.charCodeAt(0)));
+  text(0, "RIFF"); bytes.setUint32(4, 36 + samples, true); text(8, "WAVEfmt "); bytes.setUint32(16, 16, true);
+  bytes.setUint16(20, 1, true); bytes.setUint16(22, 1, true); bytes.setUint32(24, 8000, true); bytes.setUint32(28, 8000, true);
+  bytes.setUint16(32, 1, true); bytes.setUint16(34, 8, true); text(36, "data"); bytes.setUint32(40, samples, true);
+  for (let i = 0; i < samples; i++) bytes.setUint8(44 + i, 128);
+  return URL.createObjectURL(new Blob([bytes], { type: "audio/wav" }));
+}
+function unlockAudio() {
+  if (audioUnlocked || state.audio) return;
+  audioUnlocked = true;
+  player.onended = player.onpause = player.onerror = null;
+  player.src = silence();
+  player.play().then(() => { if (!state.audio) player.pause(); })   // a reply may have started on the same click
+    .catch(() => { audioUnlocked = false; });
+}
+for (const type of ["pointerdown", "keydown", "touchstart"]) document.addEventListener(type, unlockAudio, { capture: true, passive: true });
+function speakWhenAllowed(text) {   // the browser held the sound: play it on the next click or key press
+  stopSpeaking();
+  const token = speechToken;
+  toast("Your browser holds sound until you use the page — click anywhere or press a key and I'll speak.", "info");
+  const go = () => {
+    for (const type of ["pointerdown", "keydown"]) document.removeEventListener(type, go, true);
+    if (token === speechToken) speak(text);   // nothing newer was said or stopped meanwhile
+  };
+  for (const type of ["pointerdown", "keydown"]) document.addEventListener(type, go, true);
+}
 function stopSpeaking() {
   speechToken++;
   window.speechSynthesis?.cancel();
-  if (state.audio) { state.audio.pause(); URL.revokeObjectURL(state.audio.src); state.audio = null; }
+  if (state.audio) {
+    state.audio.pause();
+    if (state.audio.src.startsWith("blob:")) URL.revokeObjectURL(state.audio.src);
+    state.audio = null;
+  }
   if (els.body.dataset.state === "speaking") setState("idle");
 }
 function browserVoice(lang) {
@@ -484,10 +527,11 @@ async function synthesizeClip(text, lang) {   // one clip from the server's loca
 }
 function playClip(url) {   // resolves when the clip ends or is stopped; rejects if the browser refuses to play
   return new Promise((resolve, reject) => {
-    const audio = new Audio(url);
-    state.audio = audio;
+    const audio = player;
     audio.onended = audio.onpause = () => resolve();
     audio.onerror = () => reject(new Error("The browser could not play the audio"));
+    audio.src = url;
+    state.audio = audio;
     audio.play().catch(reject);
   });
 }
@@ -505,16 +549,15 @@ async function speakStreamed(text, lang, token) {   // neural voice: one clip, p
   setState("speaking", "Voice reply");
   const started = performance.now();
   try {
-    const playing = playClip(`/api/speak/${prepared.id}`);
-    state.audio?.addEventListener("playing", () => logLine(`🔊 neural voice · first audio in ${((performance.now() - started) / 1000).toFixed(2)}s`, "l-dim"), { once: true });
-    await playing;
+    const first = () => logLine(`🔊 neural voice · first audio in ${((performance.now() - started) / 1000).toFixed(2)}s`, "l-dim");
+    player.addEventListener("playing", first, { once: true });
+    try { await playClip(`/api/speak/${prepared.id}`); } finally { player.removeEventListener("playing", first); }
     if (token === speechToken) stopSpeaking();
     return true;
   } catch (error) {
     if (token !== speechToken) return true;
-    if (error.name === "NotAllowedError") {   // autoplay policy: needs a click on the page first
-      stopSpeaking();
-      toast("The browser blocked audio. Click the Speak button on the answer to hear it.", "info");
+    if (error.name === "NotAllowedError") {   // autoplay policy: play on the next click / key press
+      speakWhenAllowed(text);
       return true;
     }
     logLine("✕ neural voice failed: " + error.message, "l-err");
@@ -548,9 +591,8 @@ async function speak(text) {
       return;
     } catch (error) {
       if (token !== speechToken) return;
+      if (error.name === "NotAllowedError") return speakWhenAllowed(text);   // autoplay policy: next click / key press
       stopSpeaking();
-      if (error.name === "NotAllowedError")   // autoplay policy: needs a click on the page first
-        return toast("The browser blocked audio. Click the Speak button on the answer to hear it.", "info");
       logLine("✕ MMS-TTS failed: " + error.message, "l-err");
       if (lang === "he" && !browserVoice("he").length)
         return toast("Local Hebrew voice failed and the browser has no Hebrew voice: " + error.message);
@@ -570,7 +612,11 @@ function speakInBrowser(text, lang) {   // resolves when the utterance ends
   utterance.lang = utterance.voice?.lang || (lang === "he" ? "he-IL" : "en-GB");
   utterance.rate = 1.02;
   utterance.onstart = () => setState("speaking");
-  utterance.onend = utterance.onerror = () => { if (els.body.dataset.state === "speaking") setState("idle"); resolve(); };
+  utterance.onend = utterance.onerror = (event) => {
+    if (els.body.dataset.state === "speaking") setState("idle");
+    if (event.error === "not-allowed") speakWhenAllowed(text);   // autoplay policy: next click / key press
+    resolve();
+  };
   synth.cancel();
   synth.speak(utterance);
   });
