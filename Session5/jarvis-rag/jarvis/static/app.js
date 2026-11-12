@@ -739,6 +739,41 @@ const SILENCE_SECONDS = 1.6, MAX_SECONDS = 60, NO_SPEECH_SECONDS = 8, SPEECH_MS 
 // the server (private, slower). The browser engine falls back to Whisper when it isn't usable.
 const BrowserSpeech = window.SpeechRecognition || window.webkitSpeechRecognition;
 const REVIEW_BELOW = 0.5;   // browser confidence under this: check the text instead of running it
+function readyTone() {   // ~0.1 s "ding": the microphone is recording now
+  try {
+    const ctx = new AudioContext(), tone = ctx.createOscillator(), gain = ctx.createGain(), t = ctx.currentTime;
+    tone.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.12, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+    tone.connect(gain).connect(ctx.destination);
+    tone.onended = () => ctx.close();
+    tone.start(t);
+    tone.stop(t + 0.13);
+  } catch { /* the cue is optional */ }
+}
+const OPENING = "Opening microphone… wait for the tone";
+// Warm microphone: opening the device takes ~0.5-1.5 s on every click, so after you use the mic it stays open
+// for MIC_WARM_MINUTES (the browser shows the mic as in use), and the next question starts listening at once.
+// It closes when the tab is hidden or after that idle time.
+const MIC_WARM_MINUTES = 5;
+const mic = { stream: null, timer: null };
+async function openMic() {
+  clearTimeout(mic.timer);
+  if (mic.stream?.active) return mic.stream;
+  mic.stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  return mic.stream;
+}
+function releaseMicLater() { clearTimeout(mic.timer); mic.timer = setTimeout(releaseMic, MIC_WARM_MINUTES * 60000); }
+function releaseMic() { clearTimeout(mic.timer); mic.stream?.getTracks().forEach((t) => t.stop()); mic.stream = null; }
+document.addEventListener("visibilitychange", () => { if (document.hidden && !state.recorder && !state.recognizer) releaseMic(); });
+function micReady(clicked, engine) {   // how long from the click until the mic really records
+  setState("listening", engine === "browser" ? "Speak now — text appears as you talk" : "Speak now — I stop when you pause");
+  readyTone();
+  logLine(`🎙 ${engine} mic ready in ${((performance.now() - clicked) / 1000).toFixed(2)}s`, "l-dim");
+}
 function toggleRecording() {
   if (state.recognizer) return state.recognizer.stop();
   if (state.recorder) return state.recorder.stop();
@@ -757,7 +792,10 @@ function listenInBrowser() {
   const started = performance.now();
   let finalText = "", interimText = "", confidence = null, failure = null;
   const level = (value) => document.documentElement.style.setProperty("--level", value);
-  recognizer.onstart = () => { els.mic.classList.add("recording"); setState("listening", "Speak now — text appears as you talk"); };
+  els.mic.classList.add("recording");
+  setState("listening", OPENING);   // words said before the tone are lost
+  if (navigator.mediaDevices?.getUserMedia) openMic().catch(() => {});   // keeps the device warm for the next question
+  recognizer.onaudiostart = () => micReady(started, "browser");
   recognizer.onspeechstart = () => level("0.6");
   recognizer.onspeechend = () => level("0");
   recognizer.onresult = (event) => {
@@ -773,6 +811,7 @@ function listenInBrowser() {
   recognizer.onerror = (event) => { failure = event.error; };
   recognizer.onend = () => {
     state.recognizer = null;
+    releaseMicLater();
     els.mic.classList.remove("recording");
     level("0");
     setState("idle");
@@ -803,11 +842,11 @@ async function recordWhisper() {
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast("This browser cannot record audio.");
   if (!state.ended) return toast("Wait for the current run to finish.", "info");
   let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-  } catch { return toast("Microphone permission was denied."); }
+  const clicked = performance.now();
+  els.mic.classList.add("recording");
+  setState("listening", OPENING);
+  try { stream = await openMic(); }
+  catch { els.mic.classList.remove("recording"); setState("idle"); return toast("Microphone permission was denied."); }
   stopSpeaking();
   const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
   const recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
@@ -826,14 +865,14 @@ async function recordWhisper() {
     const level = Math.min(1, Math.sqrt(sum / samples.length) * 6);
     document.documentElement.style.setProperty("--level", level.toFixed(3));
     const now = performance.now();
-    floor ??= level;
+    floor ??= Math.min(level, 0.02);   // never learn the floor from the first frame: you may already be talking
     const threshold = Math.max(MIN_THRESHOLD, floor * 2.5 + 0.03);
     if (level > threshold) {
       loudSince ??= now;
       if (now - loudSince >= SPEECH_MS) { heard = true; quietSince = null; }
     } else {
       loudSince = null;
-      floor = floor * 0.95 + level * 0.05;   // the noise floor learns only from quiet frames
+      floor = level < floor ? floor * 0.7 + level * 0.3 : floor * 0.98 + level * 0.02;   // quiet frames only: falls fast, rises slowly
       if (heard) quietSince ??= now;
     }
     const silent = heard && quietSince && now - quietSince > SILENCE_SECONDS * 1000;
@@ -844,7 +883,7 @@ async function recordWhisper() {
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.onstop = async () => {
     cancelAnimationFrame(frame);
-    stream.getTracks().forEach((t) => t.stop());
+    releaseMicLater();   // the stream stays open for the next question
     audio.close();
     document.documentElement.style.setProperty("--level", "0");
     state.recorder = null;
@@ -854,8 +893,7 @@ async function recordWhisper() {
   };
   state.recorder = recorder;
   recorder.start();
-  els.mic.classList.add("recording");
-  setState("listening");
+  micReady(clicked, "whisper");
   meter();
 }
 async function transcribe(blob) {
