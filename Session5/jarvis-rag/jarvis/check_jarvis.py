@@ -194,6 +194,36 @@ class JarvisServer(unittest.TestCase):
             finally:
                 skills.SKILLS["rag"], skills.SKILLS["shorts"], rag.ANSWER, skills.search_query = saved
 
+    def test_conversation_makes_follow_ups_work(self):  # history from the console: rewrite + "shorts about it"
+        history = [{"question": "מה עידן אוהב לאכול?", "answer": "עידן עף על פיצות."}]
+        rag_request = skills.SKILLS["rag"].validate({"question": "והראל?", "history": history})
+        self.assertTrue(rag_request["rewrite"])
+        self.assertEqual(skills.SKILLS["rag"].stages(rag_request)[0]["id"], "context")  # "Understand follow-up" first
+        self.assertFalse(skills.SKILLS["rag"].validate({"question": "מה סוכם בישיבת הצוות ב-11.11?", "history": history})["rewrite"])
+        self.assertEqual(skills.clean_history([{"question": "q", "answer": "a" * 5000}, "junk", {"question": "", "answer": "x"}]),
+                         [{"question": "q", "answer": "a" * skills.MAX_TURN_CHARS}])
+        with self.assertRaises(ValueError):  # "about it" with nothing before it
+            skills.SKILLS["jarvis"].validate({"question": "find shorts about it"})
+        calls = []
+
+        class FakeShorts(skills.ShortsSkill):
+            def run(self, request, run):
+                calls.append(request["question"])
+                run.emit("posts", tool="search_youtube_shorts", query=request["question"], posts=[])
+
+        saved = skills.SKILLS["shorts"], skills.search_query
+        skills.SKILLS["shorts"] = FakeShorts()
+        skills.search_query = lambda asked, claims, *a: "pizza" if claims == ["עידן עף על פיצות."] else "wrong"
+        try:
+            self.wait_idle()
+            code, data = self.json("/api/runs", {"skill": "jarvis", "request": {"question": "תמצא לי שורטס על זה", "history": history}})
+            self.assertEqual(code, 202)
+            events = self.events(data["run_id"])
+        finally:
+            skills.SKILLS["shorts"], skills.search_query = saved
+        self.assertEqual([s["id"] for s in events[0]["stages"]], ["route", "query", "mcp"])  # no new notes search
+        self.assertEqual(calls, ["pizza"])  # searched from the previous answer
+
     def test_vault_scope_defaults_to_whole_vault(self):  # a note in any folder, a new one too, is indexed
         support = sys.modules.get("index_support") or __import__("index_support")
         with tempfile.TemporaryDirectory() as folder:

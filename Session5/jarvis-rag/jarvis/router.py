@@ -42,6 +42,7 @@ NOTES = re.compile(r"\b(?:team|teams|team's|our|meetings?|projects?|notes?|vault
 # "question? find shorts about it" / "... and show me videos" -> the notes part and the YouTube part
 CLAUSES = re.compile(r"[?!.\n]+|\s+(?:and|then)\s+(?=(?:find|show|search|get|give|bring|play)\b)|"
                      r"\s+ו(?=(?:תמצא|תחפש|תראה|תביא|תן|מצא|חפש|הראה|תציג)(?:\s|$))", re.I)
+PRONOUN = re.compile(r"(?:^|\s)(?:it|that|this|them|those|these|זה|זאת|זו|הזה|הזאת|אותו|אותה|אותם)(?=\s|$)", re.I)
 FORCE = {"docs": "rag", "rag": "rag", "ask": "rag", "shorts": "shorts", "youtube": "shorts", "yt": "shorts",
          "meme": "meme", "memes": "meme", "status": "status", "sync": "vault_sync"}
 # "make a meme about ..." / "תעשה לי מם על ...": the meme word plus a make verb (a question about memes stays with the notes)
@@ -76,10 +77,10 @@ def notes_question(text):  # the part of a combo request that the notes answer
     asked = [p for p in parts if not (STRONG.search(p) or WEAK.search(p))]
     if asked:
         return " ".join(asked)
-    topic = REFERENCE.sub(" ", shorts_query(text)).strip()  # "find shorts about the team's favorite food" -> "team's favorite food"
+    topic = PRONOUN.sub(" ", REFERENCE.sub(" ", shorts_query(text))).strip()  # "find shorts about the team's food" -> "team's food"
     if topic.startswith("ש"):  # "על מה שהצוות אוהב" -> "מה שהצוות אוהב"
         topic = "מה " + topic
-    return topic or text
+    return topic
 
 
 def count(text):
@@ -118,6 +119,9 @@ def route(text):
         return Route("shorts", handle.group(0), {"mode": "channel", **extra}, f"channel {handle.group(0)} → its latest Shorts")
     if (strong or weak) and not handle and (REFERENCE.search(text) or NOTES.search(text)):
         question = notes_question(text)
+        if not question:  # "find shorts about it": about the previous answer in this conversation
+            return Route("combo", "", {"mode": "search", "follow_up": True, **extra},
+                         "YouTube about the previous answer → search Shorts about it")
         return Route("combo", question, {"mode": "search", **extra},
                      "notes + YouTube → answer from your notes, then search Shorts about the answer")
     if strong or weak:

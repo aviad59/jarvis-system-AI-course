@@ -27,6 +27,7 @@ EX1, EX2, EX3 = ROOT / "exercise-1-indexing", ROOT / "exercise-2-retrieval", ROO
 INDEX_FILE = EX1 / "build" / "index.json"  # the local copy of the index, written by every embed run
 SEARCH_RESULTS = EX2 / "build" / "search-results.json"
 ANSWER = EX3 / "artifacts" / "answer.json"
+HISTORY = EX3 / "artifacts" / "history.json"  # the conversation so far, for the answer model (Jarvis)
 KEY_FILES = tuple(folder / name for folder in (ROOT, ROOT / "jarvis", EX3, EX1)  # where ANTHROPIC_API_KEY=... may live
                   for name in (".env", "atlas-credentials.env"))
 DEFAULT_MODELS = {"anthropic": "claude-opus-5-5", "ollama": "gemma3:4b"}
@@ -112,7 +113,8 @@ def index_steps(documents="vault", source="local", structured=False, embedding_m
 
 
 def build_steps(question, skip_index=False, structured=False, embedding_model="embeddinggemma", hybrid=False,
-                top_k=3, exclude_superseded=False, provider="ollama", model=None, source="local", documents="vault"):
+                top_k=3, exclude_superseded=False, provider="ollama", model=None, source="local", documents="vault",
+                history_file=None):
     """Return the pipeline as a list of steps: {'id', 'title', 'folder', 'args'} (args exclude the Python executable).
 
     source="mongodb" stores and reads the vectors in MongoDB Atlas; source="local" uses only INDEX_FILE.
@@ -131,7 +133,8 @@ def build_steps(question, skip_index=False, structured=False, embedding_model="e
                            *(["--source", "file", "--index", str(INDEX_FILE)] if local else [])]})
     steps.append({"id": "answer", "title": f"Answer ({model})", "folder": EX3,
                   "args": ["run.py", "--input", str(SEARCH_RESULTS), "--provider", provider, "--model", model,
-                           "--output", str(ANSWER), "--require-citations", "--timeout", str(GENERATION_TIMEOUT[provider])]})
+                           "--output", str(ANSWER), "--require-citations", "--timeout", str(GENERATION_TIMEOUT[provider]),
+                           *(["--history", str(history_file)] if history_file else [])]})
     return steps
 
 

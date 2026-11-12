@@ -15,6 +15,7 @@ def main():  # מרכזים את סדר ההרצה בפונקציה אחת.
     parser.add_argument("--timeout", type=int, default=120)  # מגבילים את משך בקשת HTTP אחת בשניות.
     parser.add_argument("--fixture", default="fixtures/answer.json")  # בוחרים תשובה מוכנה למסלול offline_fixture בלבד.
     parser.add_argument("--output", default="artifacts/answer.json")  # שומרים כל ניסיון בשם נפרד אם רוצים להשוות בין הרצות.
+    parser.add_argument("--history", help="JSON file with the earlier turns [{question, answer}] (Jarvis conversation)")
     parser.add_argument("--require-citations", action="store_true")  # בונוס1: דורשים שהבודק האוטומטי של ההפניות כבר יהיה ממומש.
     args = parser.parse_args()  # מפענחים את האפשרויות שהוקלדו בטרמינל.
     try:  # מטפלים בשגיאות צפויות כדי לתת הודעה שאפשר לפעול לפיה.
@@ -23,7 +24,11 @@ def main():  # מרכזים את סדר ההרצה בפונקציה אחת.
         if args.provider != "offline_fixture" and not args.model:  # במסלול אמיתי אין להניח שדגם כלשהו כבר מותקן או נגיש.
             raise ValueError("Select an available generation model with --model")  # מסבירים איך לבחור Generation Model; זה אינו Embedding Model.
         search = load_search(args.input)  # טוענים את השאלה והמקורות שהוחזרו בחיפוש.
-        context = assemble_context(search["question"], search["results"], args.max_chars)  # מרכיבים את ההקשר באמצעות הקוד שהתלמידים משלימים.
+        context = assemble_context(search["question"], search["results"], args.max_chars)
+        if args.history:  # earlier turns: only to understand what the question refers to, not evidence
+            turns = json.loads(Path(args.history).read_text(encoding="utf-8"))
+            if turns:
+                context["conversation"] = turns  # מרכיבים את ההקשר באמצעות הקוד שהתלמידים משלימים.
         endpoint = args.endpoint or ("https://api.anthropic.com/v1" if args.provider == "anthropic" else "http://localhost:11434")  # בוחרים את כתובת הספק; הנתיבים של Messages ושל Ollama שונים.
         answer, seconds = generate(context, args.provider, args.model, endpoint, args.timeout, args.fixture)  # מקבלים תשובה ממודל או תשובה קבועה מה־fixture המסומן.
         try:  # בודק ההפניות הוא בונוס נפרד מליבת התרגיל.

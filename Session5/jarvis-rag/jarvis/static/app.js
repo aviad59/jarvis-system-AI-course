@@ -15,7 +15,7 @@ const els = {
   engine: $("stt-engine"),
   autoscroll: $("autoscroll"), toast: $("toast"), boot: $("boot"), bootLines: $("boot-lines"),
 };
-const state = { skills: [], skill: null, runId: null, source: null, card: null, stageStart: {}, live: false,
+const state = { conversation: [], skills: [], skill: null, runId: null, source: null, card: null, stageStart: {}, live: false,
                 lastAnswer: null, ended: true, recorder: null, recognizer: null, audio: null };
 
 /* ---------------- utilities ---------------- */
@@ -216,7 +216,7 @@ async function submit(event) {
   try {
     const { run_id } = await api("/api/runs", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ skill: state.skill.name, request: { question, ...readOptions() } }),
+      body: JSON.stringify({ skill: state.skill.name, request: { question, ...readOptions(), history: state.conversation } }),
     });
     els.question.value = "";
     autosize();
@@ -247,6 +247,8 @@ async function cancelRun() {
 const HANDLERS = {
   run_start(e) {
     els.intro?.remove();
+    closeTheater();
+    state.asked = e.request.question || "";
     if (e.request.question) els.feed.append(el("div", { class: "msg-user", dir: "auto" }, el("span", { class: "who", text: "YOU" }), e.request.question));
     state.card = el("div", { class: "msg-ai" }, el("span", { class: "who", text: "JARVIS" }),
       el("div", { class: "pending" }, el("i"), el("i"), el("i"), el("span", { text: "Working on it" })));
@@ -335,32 +337,18 @@ const HANDLERS = {
     const head = el("p", { class: "claim", dir: "auto", text: e.posts.length
       ? `${what} (MCP tool: ${e.tool})` : `No Shorts found for “${e.query}”.` });
     if (!posts.length) { fillCard(head); say(head.textContent); return; }
-    // The video plays inside the console (YouTube embed), never as a link out.
-    const player = el("div", { class: "player" });
-    const caption = el("div", { class: "player-caption", dir: "auto" });
-    const show = (p, autoplay) => {
-      player.replaceChildren(autoplay
-        ? el("iframe", { src: `https://www.youtube-nocookie.com/embed/${videoId(p)}?autoplay=1&playsinline=1&rel=0`,
-            title: p.title || "YouTube Short", allow: "autoplay; encrypted-media; picture-in-picture; fullscreen",
-            allowfullscreen: "", referrerpolicy: "strict-origin-when-cross-origin" })
-        : el("button", { type: "button", class: "poster", title: "Play", onclick: () => show(p, true) },
-            p.thumbnail ? el("img", { src: p.thumbnail, alt: "" }) : null, el("span", { class: "play-icon", text: "▶" })));
-      caption.replaceChildren(el("b", { text: p.title || "" }), el("div", { class: "post-meta" }, ...[p.uploader,
-        num(p.views) && `${num(p.views)} views`, num(p.likes) && `${num(p.likes)} likes`,
-        num(p.comments) && `${num(p.comments)} comments`, date(p.upload_date)].filter(Boolean).map((t) => el("span", { text: t }))));
-      for (const item of list.children) item.classList.toggle("current", item.dataset.id === videoId(p));
-    };
-    const list = el("ul", { class: "posts" }, posts.map((p) => el("li", { "data-id": videoId(p) },
-      el("button", { type: "button", class: "post", title: p.title || "", onclick: () => { stopSpeaking(); show(p, true); } },
-        p.thumbnail ? el("img", { src: p.thumbnail, alt: "", loading: "lazy" }) : null,
-        el("span", { dir: "auto", text: p.title || videoId(p) })))));
-    show(posts[0], false);
-    fillCard(head, el("div", { class: "shorts" }, el("div", { class: "stage-col" }, player, caption), posts.length > 1 ? list : null));
+    // Thumbnails in the card; the video itself plays big in the theater (never a link out).
+    const gallery = el("div", { class: "gallery" }, posts.map((p, i) => el("button", { type: "button", class: "thumb",
+      title: p.title || "", onclick: () => { stopSpeaking(); openTheater(posts, i, true); } },
+      el("span", { class: "thumb-img" }, p.thumbnail ? el("img", { src: p.thumbnail, alt: "", loading: "lazy" }) : null,
+        el("span", { class: "play-icon", text: "▶" })),
+      el("span", { class: "thumb-title", dir: "auto", text: p.title || videoId(p) }))));
+    fillCard(head, gallery);
     const title = posts[0].title ? `: ${posts[0].title}` : "";
     say(single ? (hebrew ? `הנה הסרטון${title}.` : `Here's the video${title}.`)
       : hebrew ? `מצאתי ${e.posts.length} שורטס ${channel ? "אחרונים מ" : "על "}${e.query}. הנה הראשון${title}.`
       : `I found ${e.posts.length} ${channel ? "latest Shorts from" : "Shorts for"} ${e.query}. Here's the first one${title}.`);
-    state.pendingVideo = () => show(posts[0], true);   // played after the spoken answer (run_end)
+    state.pendingVideo = () => openTheater(posts, 0, true);   // played after the spoken answer (run_end)
   },
   meme(e) {   // a meme from the memes MCP server: Memegen's URL, or /media/... when drawn locally (Hebrew)
     const head = el("p", { class: "claim", dir: "auto", text: `${e.name} · ${e.text.join(" / ")}` });
@@ -390,6 +378,8 @@ const HANDLERS = {
     const live = state.live;
     state.live = false;
     loadHistory();
+    if (live && e.status === "done" && state.asked && state.lastAnswer)   // remembered for the next question (last 6 turns)
+      state.conversation = [...state.conversation, { question: state.asked, answer: state.lastAnswer }].slice(-6);
     if (!live) return setState("idle");
     if (e.status === "error") { setState("error"); setTimeout(() => els.body.dataset.state === "error" && setState("idle"), 6000); return; }
     const video = e.status === "done" ? state.pendingVideo : null;   // Shorts: speak the answer first, then play the video
@@ -421,6 +411,38 @@ function handle(event) {
 function say(text) {   // what is read aloud at the end of the run; a combined run says the answer, then the Shorts line
   state.lastAnswer = [state.lastAnswer, text].filter(Boolean).join(" ");
 }
+/* Theater: the Short plays large over the center column; the other results are a side list. Esc or ✕ closes it. */
+function closeTheater() { document.querySelector(".theater")?.remove(); }
+function openTheater(posts, start, autoplay) {
+  closeTheater();
+  const num = (n) => (n == null ? null : Intl.NumberFormat("en", { notation: "compact" }).format(n));
+  const date = (d) => (d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null);
+  const player = el("div", { class: "player" });
+  const caption = el("div", { class: "player-caption", dir: "auto" });
+  const list = el("ul", { class: "posts" });
+  const show = (p, play) => {
+    player.replaceChildren(play
+      ? el("iframe", { src: `https://www.youtube-nocookie.com/embed/${videoId(p)}?autoplay=1&playsinline=1&rel=0`,
+          title: p.title || "YouTube Short", allow: "autoplay; encrypted-media; picture-in-picture; fullscreen",
+          allowfullscreen: "", referrerpolicy: "strict-origin-when-cross-origin" })
+      : el("button", { type: "button", class: "poster", title: "Play", onclick: () => show(p, true) },
+          p.thumbnail ? el("img", { src: p.thumbnail, alt: "" }) : null, el("span", { class: "play-icon", text: "▶" })));
+    caption.replaceChildren(el("b", { text: p.title || "" }), el("div", { class: "post-meta" }, ...[p.uploader,
+      num(p.views) && `${num(p.views)} views`, num(p.likes) && `${num(p.likes)} likes`,
+      num(p.comments) && `${num(p.comments)} comments`, date(p.upload_date)].filter(Boolean).map((t) => el("span", { text: t }))));
+    for (const item of list.children) item.classList.toggle("current", item.dataset.id === videoId(p));
+  };
+  list.append(...posts.map((p) => el("li", { "data-id": videoId(p) },
+    el("button", { type: "button", class: "post", title: p.title || "", onclick: () => { stopSpeaking(); show(p, true); } },
+      p.thumbnail ? el("img", { src: p.thumbnail, alt: "", loading: "lazy" }) : null,
+      el("span", { dir: "auto", text: p.title || videoId(p) })))));
+  const box = el("div", { class: "theater", role: "dialog", "aria-label": "YouTube Short" },
+    el("button", { type: "button", class: "theater-close", title: "Close (Esc)", onclick: closeTheater, text: "✕" }),
+    el("div", { class: "theater-main" }, player, caption), posts.length > 1 ? list : null);
+  document.querySelector(".center").append(box);
+  show(posts[start], autoplay);
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTheater(); });
 function videoId(post) {   // YouTube video ID from the MCP result (id, or the /shorts/ or ?v= URL)
   if (/^[\w-]{11}$/.test(post.id || "")) return post.id;
   const match = /(?:shorts\/|[?&]v=|youtu\.be\/)([\w-]{11})/.exec(post.url || "");
@@ -726,6 +748,41 @@ const SILENCE_SECONDS = 1.6, MAX_SECONDS = 60, NO_SPEECH_SECONDS = 8, SPEECH_MS 
 // the server (private, slower). The browser engine falls back to Whisper when it isn't usable.
 const BrowserSpeech = window.SpeechRecognition || window.webkitSpeechRecognition;
 const REVIEW_BELOW = 0.5;   // browser confidence under this: check the text instead of running it
+function readyTone() {   // ~0.1 s "ding": the microphone is recording now
+  try {
+    const ctx = new AudioContext(), tone = ctx.createOscillator(), gain = ctx.createGain(), t = ctx.currentTime;
+    tone.frequency.value = 880;
+    gain.gain.setValueAtTime(0.0001, t);
+    gain.gain.exponentialRampToValueAtTime(0.12, t + 0.01);
+    gain.gain.exponentialRampToValueAtTime(0.0001, t + 0.12);
+    tone.connect(gain).connect(ctx.destination);
+    tone.onended = () => ctx.close();
+    tone.start(t);
+    tone.stop(t + 0.13);
+  } catch { /* the cue is optional */ }
+}
+const OPENING = "Opening microphone… wait for the tone";
+// Warm microphone: opening the device takes ~0.5-1.5 s on every click, so after you use the mic it stays open
+// for MIC_WARM_MINUTES (the browser shows the mic as in use), and the next question starts listening at once.
+// It closes when the tab is hidden or after that idle time.
+const MIC_WARM_MINUTES = 5;
+const mic = { stream: null, timer: null };
+async function openMic() {
+  clearTimeout(mic.timer);
+  if (mic.stream?.active) return mic.stream;
+  mic.stream = await navigator.mediaDevices.getUserMedia({
+    audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+  });
+  return mic.stream;
+}
+function releaseMicLater() { clearTimeout(mic.timer); mic.timer = setTimeout(releaseMic, MIC_WARM_MINUTES * 60000); }
+function releaseMic() { clearTimeout(mic.timer); mic.stream?.getTracks().forEach((t) => t.stop()); mic.stream = null; }
+document.addEventListener("visibilitychange", () => { if (document.hidden && !state.recorder && !state.recognizer) releaseMic(); });
+function micReady(clicked, engine) {   // how long from the click until the mic really records
+  setState("listening", engine === "browser" ? "Speak now — text appears as you talk" : "Speak now — I stop when you pause");
+  readyTone();
+  logLine(`🎙 ${engine} mic ready in ${((performance.now() - clicked) / 1000).toFixed(2)}s`, "l-dim");
+}
 function toggleRecording() {
   if (state.recognizer) return state.recognizer.stop();
   if (state.recorder) return state.recorder.stop();
@@ -744,7 +801,10 @@ function listenInBrowser() {
   const started = performance.now();
   let finalText = "", interimText = "", confidence = null, failure = null;
   const level = (value) => document.documentElement.style.setProperty("--level", value);
-  recognizer.onstart = () => { els.mic.classList.add("recording"); setState("listening", "Speak now — text appears as you talk"); };
+  els.mic.classList.add("recording");
+  setState("listening", OPENING);   // words said before the tone are lost
+  if (navigator.mediaDevices?.getUserMedia) openMic().catch(() => {});   // keeps the device warm for the next question
+  recognizer.onaudiostart = () => micReady(started, "browser");
   recognizer.onspeechstart = () => level("0.6");
   recognizer.onspeechend = () => level("0");
   recognizer.onresult = (event) => {
@@ -760,6 +820,7 @@ function listenInBrowser() {
   recognizer.onerror = (event) => { failure = event.error; };
   recognizer.onend = () => {
     state.recognizer = null;
+    releaseMicLater();
     els.mic.classList.remove("recording");
     level("0");
     setState("idle");
@@ -790,11 +851,11 @@ async function recordWhisper() {
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast("This browser cannot record audio.");
   if (!state.ended) return toast("Wait for the current run to finish.", "info");
   let stream;
-  try {
-    stream = await navigator.mediaDevices.getUserMedia({
-      audio: { channelCount: 1, echoCancellation: true, noiseSuppression: true, autoGainControl: true },
-    });
-  } catch { return toast("Microphone permission was denied."); }
+  const clicked = performance.now();
+  els.mic.classList.add("recording");
+  setState("listening", OPENING);
+  try { stream = await openMic(); }
+  catch { els.mic.classList.remove("recording"); setState("idle"); return toast("Microphone permission was denied."); }
   stopSpeaking();
   const type = ["audio/webm;codecs=opus", "audio/ogg;codecs=opus", "audio/webm"].find((t) => MediaRecorder.isTypeSupported(t)) || "";
   const recorder = new MediaRecorder(stream, type ? { mimeType: type } : undefined);
@@ -813,14 +874,14 @@ async function recordWhisper() {
     const level = Math.min(1, Math.sqrt(sum / samples.length) * 6);
     document.documentElement.style.setProperty("--level", level.toFixed(3));
     const now = performance.now();
-    floor ??= level;
+    floor ??= Math.min(level, 0.02);   // never learn the floor from the first frame: you may already be talking
     const threshold = Math.max(MIN_THRESHOLD, floor * 2.5 + 0.03);
     if (level > threshold) {
       loudSince ??= now;
       if (now - loudSince >= SPEECH_MS) { heard = true; quietSince = null; }
     } else {
       loudSince = null;
-      floor = floor * 0.95 + level * 0.05;   // the noise floor learns only from quiet frames
+      floor = level < floor ? floor * 0.7 + level * 0.3 : floor * 0.98 + level * 0.02;   // quiet frames only: falls fast, rises slowly
       if (heard) quietSince ??= now;
     }
     const silent = heard && quietSince && now - quietSince > SILENCE_SECONDS * 1000;
@@ -831,7 +892,7 @@ async function recordWhisper() {
   recorder.ondataavailable = (e) => e.data.size && chunks.push(e.data);
   recorder.onstop = async () => {
     cancelAnimationFrame(frame);
-    stream.getTracks().forEach((t) => t.stop());
+    releaseMicLater();   // the stream stays open for the next question
     audio.close();
     document.documentElement.style.setProperty("--level", "0");
     state.recorder = null;
@@ -841,8 +902,7 @@ async function recordWhisper() {
   };
   state.recorder = recorder;
   recorder.start();
-  els.mic.classList.add("recording");
-  setState("listening");
+  micReady(clicked, "whisper");
   meter();
 }
 async function transcribe(blob) {
