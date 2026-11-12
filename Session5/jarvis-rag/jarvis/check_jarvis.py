@@ -113,6 +113,66 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual({o["key"] for o in names["shorts"]["options"]}, {"mode", "limit", "details"})
         self.assertEqual({o["key"] for o in names["rag"]["options"]} >= {"provider", "source", "hybrid", "top_k"}, True)
 
+    def test_router_sends_each_request_to_the_right_skill(self):
+        import router
+        cases = {
+            "find me 5 youtube shorts about cooking": ("shorts", "cooking", {"mode": "search", "limit": 5}),
+            "תמצא לי שורטס על בישול": ("shorts", "בישול", {"mode": "search"}),
+            "תראה לי 3 סרטונים של חתולים": ("shorts", "חתולים", {"mode": "search", "limit": 3}),
+            "show me shorts of @MrBeast": ("shorts", "@MrBeast", {"mode": "channel"}),
+            "@MrBeast": ("shorts", "@MrBeast", {"mode": "channel"}),
+            "youtube shorts from channel MrBeast": ("shorts", "MrBeast", {"mode": "channel"}),
+            "סרטונים מהערוץ MrBeast ביוטיוב": ("shorts", "MrBeast", {"mode": "channel"}),
+            "what's this? https://youtu.be/dQw4w9WgXcQ": ("shorts", "https://youtu.be/dQw4w9WgXcQ", {"mode": "url"}),
+            "/shorts lofi": ("shorts", "lofi", {"mode": "search"}),
+            "system check": ("status", "", {}),
+            "בדיקת מערכות": ("status", "", {}),
+            "סנכרן את הכספת": ("vault_sync", "", {}),
+            "/docs youtube strategy notes": ("rag", "youtube strategy notes", {}),
+        }
+        for text, (skill, question, options) in cases.items():
+            got = router.route(text)
+            self.assertEqual((got.skill, got.question, got.options), (skill, question, options), text)
+        for text in ("מה הוחלט בישיבת הצוות על הסרטונים?", "what did we decide about the videos in the meeting?",
+                     "who owns the youtube channel project?", "מי אחראי על ערוץ היוטיוב?", "cat videos",
+                     "email me at a@b.com about the 5 tasks", "What was the error rate in September?"):
+            got = router.route(text)
+            self.assertEqual((got.skill, got.question), ("rag", text), text)  # questions about the notes stay with the notes
+
+    def test_ask_jarvis_routes_and_runs_the_target_skill(self):  # the Shorts skill is stubbed: no network
+        class FakeShorts(skills.ShortsSkill):
+            def run(self, request, run):
+                run.emit("stage_start", stage="mcp", title="MCP · youtube-shorts")
+                run.emit("stage_end", stage="mcp", status="ok", seconds=0)
+                run.emit("posts", tool="search_youtube_shorts", query=request["question"],
+                         posts=[{"title": f"{request['question']} x{request['limit']}", "url": "https://youtube.com/shorts/x"}])
+        real = skills.SKILLS["shorts"]
+        skills.SKILLS["shorts"] = FakeShorts()
+        try:
+            self.wait_idle()
+            code, data = self.json("/api/runs", {"skill": "jarvis", "request": {"question": "find 4 shorts about cats"}})
+            self.assertEqual(code, 202)
+            events = self.events(data["run_id"])
+        finally:
+            skills.SKILLS["shorts"] = real
+        start = events[0]
+        self.assertEqual([s["id"] for s in start["stages"]], ["route", "mcp"])  # the monitor shows the routed pipeline
+        self.assertEqual(start["request"]["question"], "find 4 shorts about cats")  # history keeps what was asked
+        route = next(e for e in events if e["type"] == "route")
+        self.assertEqual((route["skill"], route["title"]), ("shorts", "YouTube Shorts"))
+        posts = next(e for e in events if e["type"] == "posts")
+        self.assertEqual(posts["posts"][0]["title"], "cats x4")
+        self.assertEqual(events[-1]["status"], "done")
+        names = {s["name"]: s for s in self.json("/api/skills")[1]}
+        self.assertEqual(list(names)[0], "jarvis")  # first = the console's default
+        self.assertTrue({"provider", "top_k", "limit", "details"} <= {o["key"] for o in names["jarvis"]["options"]})
+        # a question goes to the documents, with the documents' stages; a YouTube request without a topic is rejected early
+        clean = skills.SKILLS["jarvis"].validate({"question": "מה הוחלט בישיבה?"})
+        self.assertEqual(clean["route"]["skill"], "rag")
+        self.assertEqual(skills.SKILLS["jarvis"].stages(clean)[1:], skills.SKILLS["rag"].stages(clean["route"]["request"]))
+        self.assertEqual(self.json("/api/runs", {"skill": "jarvis", "request": {"question": "find shorts"}})[0], 400)
+        self.assertEqual(self.json("/api/runs", {"skill": "jarvis", "request": {"question": "  "}})[0], 400)
+
     def test_local_source_skips_mongodb(self):  # pure step building: nothing is run
         import rag
         steps = {s["id"]: s["args"] for s in rag.build_steps("q", source="local")}

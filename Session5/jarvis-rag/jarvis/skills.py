@@ -21,6 +21,7 @@ import tempfile  # MCP tool result file
 import time  # stage timing
 from pathlib import Path  # paths to the MCP server
 import rag  # the RAG pipeline steps and paths
+import router  # which skill a free-form request belongs to
 import status  # system health checks
 
 MAX_QUESTION = 2000
@@ -191,7 +192,7 @@ class ShortsSkill(Skill):  # Jarvis as an MCP client: calls the free youtube-sho
     needs_question = True
     SOCIAL_MCP = Path(__file__).resolve().parents[3] / "social-mcp"  # repo root / social-mcp
     options = [
-        {"key": "mode", "label": "Find by", "type": "select", "choices": ["search", "channel"], "default": "search"},
+        {"key": "mode", "label": "Find by", "type": "select", "choices": ["search", "channel", "url"], "default": "search"},
         {"key": "limit", "label": "Results", "type": "int", "default": 5, "min": 1, "max": 25},
         {"key": "details", "label": "Likes, comments, date (slower)", "type": "bool", "default": False},
     ]
@@ -212,11 +213,14 @@ class ShortsSkill(Skill):  # Jarvis as an MCP client: calls the free youtube-sho
         return str(venv) if venv.exists() else sys.executable
 
     def run(self, request, run):
-        if request["mode"] == "channel":
-            tool, arguments = "get_youtube_shorts", {"channel": request["question"]}
+        if request["mode"] == "url":
+            tool, arguments = "get_post_details", {"url": request["question"]}
         else:
-            tool, arguments = "search_youtube_shorts", {"query": request["question"]}
-        arguments.update(limit=request["limit"], details=request["details"])
+            if request["mode"] == "channel":
+                tool, arguments = "get_youtube_shorts", {"channel": request["question"]}
+            else:
+                tool, arguments = "search_youtube_shorts", {"query": request["question"]}
+            arguments.update(limit=request["limit"], details=request["details"])
         with tempfile.TemporaryDirectory() as folder:
             output = Path(folder) / "result.json"
             run.emit("stage_start", stage="mcp", title="MCP · youtube-shorts")
@@ -232,10 +236,51 @@ class ShortsSkill(Skill):  # Jarvis as an MCP client: calls the free youtube-sho
                                and e["line"].startswith(("STOP:", "ERROR:"))), None)
                 raise RuntimeError("YouTube Shorts MCP call failed — " + (reason or f"exit code {code}, see the log"))
             data = json.loads(output.read_text(encoding="utf-8"))
-        run.emit("posts", tool=tool, query=request["question"], posts=data.get("posts", []))
+        posts = data.get("posts") or ([data["post"]] if data.get("post") else [])  # get_post_details returns one post
+        run.emit("posts", tool=tool, query=request["question"], posts=posts)
 
 
-SKILLS = {skill.name: skill for skill in (RagSkill(), ShortsSkill(), VaultSyncSkill(), StatusSkill())}
+class JarvisSkill(Skill):  # one input for everything: router.py picks the skill, then that skill runs as usual
+    name, title = "jarvis", "Ask Jarvis"
+    description = ("Ask anything: questions go to your documents, YouTube requests (\"find shorts about cooking\", "
+                   "@channel, a YouTube link) go to the youtube-shorts MCP server, \"system check\" checks the systems. "
+                   "Start with /docs or /shorts to choose yourself.")
+    needs_question = True
+
+    @property
+    def options(self):  # the documents options plus the Shorts ones; each target reads only its own keys
+        shorts = [dict(o, label="Shorts: " + o["label"].lower()) for o in SKILLS["shorts"].options if o["key"] != "mode"]
+        return SKILLS["rag"].options + shorts
+
+    def validate(self, request):
+        clean = super().validate(request)
+        question = str(request.get("question", "")).strip()
+        if not question:
+            raise ValueError("Ask a question or make a request first")
+        if len(question) > MAX_QUESTION:
+            raise ValueError(f"Request is longer than {MAX_QUESTION} characters")
+        target = router.route(question)
+        if target.skill == "shorts" and not target.question:
+            raise ValueError("What should I look for on YouTube? e.g. \"find shorts about cooking\" or \"@MrBeast\"")
+        skill = SKILLS[target.skill]
+        inner = skill.validate({**clean, **target.options, "question": target.question})  # rejects bad input up front
+        return {**clean, "question": question,
+                "route": {"skill": target.skill, "reason": target.reason, "title": skill.title, "request": inner}}
+
+    def stages(self, request):
+        target = request["route"]
+        return [{"id": "route", "title": "Understand request"}, *SKILLS[target["skill"]].stages(target["request"])]
+
+    def run(self, request, run):
+        target = request["route"]
+        run.emit("stage_start", stage="route", title="Understand request")
+        run.emit("log", stage="route", line=f"→ {target['title']}: {target['reason']}")
+        run.emit("route", skill=target["skill"], title=target["title"], reason=target["reason"])
+        run.emit("stage_end", stage="route", status="ok", seconds=0)
+        SKILLS[target["skill"]].run(target["request"], run)
+
+
+SKILLS = {skill.name: skill for skill in (JarvisSkill(), RagSkill(), ShortsSkill(), VaultSyncSkill(), StatusSkill())}
 
 
 def describe():  # what the console needs to draw the skill picker and its options

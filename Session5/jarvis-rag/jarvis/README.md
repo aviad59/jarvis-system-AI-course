@@ -47,11 +47,29 @@ The Systems panel shows the watcher's state.
 | Area | Shows |
 |---|---|
 | Systems | Ollama + models, MongoDB Atlas chunk count, Anthropic key, Obsidian vault, local index, Whisper, speech engine |
-| Protocols | Skills. *Ask the documents* = the RAG pipeline; *System check* = health report |
+| Protocols | Skills. *Ask Jarvis* (default) = one box for everything, see below; *Ask the documents* = the RAG pipeline; *YouTube Shorts* = the MCP tool; *System check* = health report |
 | Core | The current state: standing by, listening, processing (with stage), responding |
 | Dialogue | Answers as claims with citation chips; click a chip to see the exact source chunk |
 | Pipeline telemetry | Each stage with live timer and status, retrieved evidence with scores, raw log |
 | Mission log | Every run, saved in `jarvis/data/runs/`; click to replay. Link a run with `/#run=<id>` |
+
+### Ask Jarvis: one box for everything
+
+With **Ask Jarvis** selected (the default), type or say anything; `router.py` decides where it goes
+and the card shows the choice (`JARVIS · YOUTUBE SHORTS`, and the reason in the log):
+
+| You say | Goes to |
+|---|---|
+| a question — `מה הוחלט בישיבת הצוות?`, `What was the error rate in September?` | your documents (RAG, with citations) |
+| `find me 5 youtube shorts about cooking`, `תמצא לי שורטס על בישול` | YouTube Shorts MCP · search (`5` sets the number of results) |
+| `@MrBeast`, `show me shorts from channel MrBeast`, `סרטונים מהערוץ MrBeast` | YouTube Shorts MCP · latest Shorts of the channel |
+| a YouTube link | YouTube Shorts MCP · details of that video |
+| `system check` / `בדיקת מערכות`, `sync the vault` / `סנכרן את הכספת` | system check / vault re-index |
+| `/docs …`, `/shorts …` | that skill, whatever the words |
+
+Anything not clearly about YouTube or the system goes to the documents, so a question about the
+notes that mentions YouTube (`who owns the youtube channel project?`) is answered from the notes.
+Words such as "videos" alone need a verb (`show me cat videos`); add `/shorts` when in doubt.
 
 Voice: click the mic (or Ctrl+Space) and speak. The question runs automatically when you
 pause, and the answer is read aloud when *Voice replies* is on. If the recognizer isn't
@@ -108,7 +126,8 @@ browser (static/)  --POST /api/runs-->  server.py --> RunManager (runs.py) --> S
        +------- Server-Sent Events: /api/runs/<id>/events ----+     child processes: the exercise scripts
 ```
 
-* `skills.py` – what Jarvis can do. One class per skill.
+* `skills.py` – what Jarvis can do. One class per skill; `JarvisSkill` runs whichever skill the router picks.
+* `router.py` – which skill a free-form request belongs to (plain patterns: instant, offline).
 * `runs.py` – a run is an ordered list of events; live viewers follow it, finished runs are saved.
 * `status.py` – health checks (never returns URIs or keys).
 * `voice.py` – local Whisper speech-to-text.

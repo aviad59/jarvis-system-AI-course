@@ -141,12 +141,12 @@ async function boot() {
 /* ---------------- skills & options ---------------- */
 async function loadSkills() {
   state.skills = await api("/api/skills");
-  const wanted = store.get("skill", "rag");
+  const wanted = store.get("skill.v2", "jarvis");   // v2: "Ask Jarvis" (one box for everything) is the new default
   selectSkill(state.skills.find((s) => s.name === wanted) || state.skills[0]);
 }
 function selectSkill(skill) {
   state.skill = skill;
-  store.set("skill", skill.name);
+  store.set("skill.v2", skill.name);
   els.skills.replaceChildren(...state.skills.map((s) => el("button", {
     type: "button", class: "skill", role: "radio", "aria-checked": String(s === skill), onclick: () => selectSkill(s),
   }, el("strong", { text: s.title }), el("small", { text: s.description }))));
@@ -315,6 +315,10 @@ const HANDLERS = {
     fillCard(claims, missing, foot);
     state.lastAnswer = e.claims.map((c) => c.text).join(" ");
   },
+  route(e) {   // Ask Jarvis: which skill the request went to, and why
+    state.card && (state.card.querySelector(".who").textContent = "JARVIS · " + e.title.toUpperCase());
+    setState("thinking", e.title);
+  },
   message(e) {
     fillCard(el("p", { class: "claim", dir: "auto", text: e.text }));
     state.lastAnswer = e.text;
@@ -329,8 +333,10 @@ const HANDLERS = {
         el("div", { class: "post-meta" }, ...[p.uploader, num(p.views) && `${num(p.views)} views`,
           num(p.likes) && `${num(p.likes)} likes`, num(p.comments) && `${num(p.comments)} comments`, date(p.upload_date)]
           .filter(Boolean).map((t) => el("span", { text: t }))))));
+    const what = e.tool === "get_post_details" ? "Details of the video" : e.tool === "get_youtube_shorts"
+      ? `${e.posts.length} latest Shorts from ${e.query}` : `${e.posts.length} Shorts for “${e.query}”`;
     const head = el("p", { class: "claim", dir: "auto", text: e.posts.length
-      ? `${e.posts.length} Shorts for “${e.query}” (MCP tool: ${e.tool})` : `No Shorts found for “${e.query}”.` });
+      ? `${what} (MCP tool: ${e.tool})` : `No Shorts found for “${e.query}”.` });
     fillCard(head, items.length ? el("ul", { class: "posts" }, items) : null);
     state.lastAnswer = head.textContent;
   },
