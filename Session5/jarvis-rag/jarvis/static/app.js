@@ -84,6 +84,7 @@ function setState(name, sub) {
   els.coreState.textContent = title;
   els.coreSub.textContent = sub || defaultSub;
   els.banner.textContent = sub && name === "thinking" ? `${title} · ${sub.toUpperCase()}` : title;
+  if (name === "speaking") voiceViz.start();
 }
 
 /* ---------------- clock ---------------- */
@@ -321,7 +322,7 @@ const HANDLERS = {
   },
   message(e) {
     fillCard(el("p", { class: "claim", dir: "auto", text: e.text }));
-    state.lastAnswer = e.text;
+    say(e.text);
   },
   posts(e) {   // YouTube Shorts from the youtube-shorts MCP server
     const num = (n) => (n == null ? null : Intl.NumberFormat("en", { notation: "compact" }).format(n));
@@ -333,7 +334,7 @@ const HANDLERS = {
       ? `${e.posts.length} latest Shorts from ${e.query}` : `${e.posts.length} Shorts for “${e.query}”`;
     const head = el("p", { class: "claim", dir: "auto", text: e.posts.length
       ? `${what} (MCP tool: ${e.tool})` : `No Shorts found for “${e.query}”.` });
-    if (!posts.length) { fillCard(head); state.lastAnswer = head.textContent; return; }
+    if (!posts.length) { fillCard(head); say(head.textContent); return; }
     // The video plays inside the console (YouTube embed), never as a link out.
     const player = el("div", { class: "player" });
     const caption = el("div", { class: "player-caption", dir: "auto" });
@@ -356,9 +357,9 @@ const HANDLERS = {
     show(posts[0], false);
     fillCard(head, el("div", { class: "shorts" }, el("div", { class: "stage-col" }, player, caption), posts.length > 1 ? list : null));
     const title = posts[0].title ? `: ${posts[0].title}` : "";
-    state.lastAnswer = single ? (hebrew ? `הנה הסרטון${title}.` : `Here's the video${title}.`)
+    say(single ? (hebrew ? `הנה הסרטון${title}.` : `Here's the video${title}.`)
       : hebrew ? `מצאתי ${e.posts.length} שורטס ${channel ? "אחרונים מ" : "על "}${e.query}. הנה הראשון${title}.`
-      : `I found ${e.posts.length} ${channel ? "latest Shorts from" : "Shorts for"} ${e.query}. Here's the first one${title}.`;
+      : `I found ${e.posts.length} ${channel ? "latest Shorts from" : "Shorts for"} ${e.query}. Here's the first one${title}.`);
     state.pendingVideo = () => show(posts[0], true);   // played after the spoken answer (run_end)
   },
   status(e) { renderSystems(e.systems); },
@@ -397,6 +398,9 @@ function handle(event) {
   if (handler) handler(event);
   if (event.type === "run_start") { state.lastAnswer = null; state.pendingVideo = null; }
   else if (!state.live) state.ended = true;
+}
+function say(text) {   // what is read aloud at the end of the run; a combined run says the answer, then the Shorts line
+  state.lastAnswer = [state.lastAnswer, text].filter(Boolean).join(" ");
 }
 function videoId(post) {   // YouTube video ID from the MCP result (id, or the /shorts/ or ?v= URL)
   if (/^[\w-]{11}$/.test(post.id || "")) return post.id;
@@ -482,9 +486,74 @@ async function synthesizeClip(text, lang) {   // one clip from the server's loca
   if (!response.ok) throw new Error((await response.json().catch(() => ({}))).error || "HTTP " + response.status);
   return { url: URL.createObjectURL(await response.blob()), info: JSON.parse(response.headers.get("X-TTS-Info") || "{}") };
 }
+/* The core "talks": while Jarvis speaks, the nucleus and a ring of voice bars follow the actual sound. */
+const voiceViz = (() => {
+  const BARS = 48, INNER = 52, MAX = 22;
+  const group = $("voice"), bars = [];
+  for (let i = 0; i < BARS; i++) {
+    const line = document.createElementNS("http://www.w3.org/2000/svg", "line");
+    group.append(line);
+    bars.push({ line, cos: Math.cos((i / BARS) * 2 * Math.PI - Math.PI / 2), sin: Math.sin((i / BARS) * 2 * Math.PI - Math.PI / 2), v: 0 });
+  }
+  let context = null, analyser = null, freq = null, wave = null, running = false;
+  function connect(audio) {   // route an <audio> through an analyser; if audio can't run yet, play it directly (fake motion)
+    try {
+      context ??= new AudioContext();
+      if (context.state !== "running") context.resume().catch(() => {});
+      if (context.state !== "running") return;   // never route into a suspended context: that would be silent
+      if (!analyser) {
+        analyser = context.createAnalyser();
+        analyser.fftSize = 256;
+        analyser.smoothingTimeConstant = 0.6;
+        analyser.connect(context.destination);
+        freq = new Uint8Array(analyser.frequencyBinCount);
+        wave = new Uint8Array(analyser.fftSize);
+      }
+      context.createMediaElementSource(audio).connect(analyser);
+      audio.dataset.viz = "1";
+    } catch { /* visual only */ }
+  }
+  function frame(time) {
+    if (els.body.dataset.state !== "speaking") {
+      running = false;
+      document.documentElement.style.setProperty("--level", "0");
+      for (const b of bars) { b.v = 0; b.line.setAttribute("x2", 200 + b.cos * INNER); b.line.setAttribute("y2", 200 + b.sin * INNER); }
+      return;
+    }
+    const real = analyser && state.audio?.dataset.viz && !state.audio.paused;
+    let level;
+    if (real) {
+      analyser.getByteTimeDomainData(wave);
+      analyser.getByteFrequencyData(freq);
+      let sum = 0;
+      for (const x of wave) sum += ((x - 128) / 128) ** 2;
+      level = Math.min(1, Math.sqrt(sum / wave.length) * 4);
+    } else {   // browser voice or no analyser: a syllable-like rhythm
+      level = 0.35 + 0.3 * Math.abs(Math.sin(time / 110)) * (0.6 + 0.4 * Math.sin(time / 370));
+    }
+    document.documentElement.style.setProperty("--level", level.toFixed(3));
+    bars.forEach((b, i) => {
+      const k = Math.abs(i - BARS / 2) / (BARS / 2);   // mirrored: low frequencies at the top and bottom
+      const target = real ? (freq[Math.floor((1 - k) * freq.length * 0.55)] / 255) * (0.4 + level)
+        : level * (0.5 + 0.5 * Math.abs(Math.sin(time / 90 + i * 0.7)));
+      b.v += (target - b.v) * 0.45;
+      const r = INNER + 2 + b.v * MAX;
+      b.line.setAttribute("x2", (200 + b.cos * r).toFixed(1));
+      b.line.setAttribute("y2", (200 + b.sin * r).toFixed(1));
+    });
+    requestAnimationFrame(frame);
+  }
+  for (const b of bars) {
+    b.line.setAttribute("x1", 200 + b.cos * INNER); b.line.setAttribute("y1", 200 + b.sin * INNER);
+    b.line.setAttribute("x2", 200 + b.cos * INNER); b.line.setAttribute("y2", 200 + b.sin * INNER);
+  }
+  document.addEventListener("pointerdown", () => { try { (context ??= new AudioContext()).resume(); } catch {} }, { once: true });
+  return { connect, start() { if (!running) { running = true; requestAnimationFrame(frame); } } };
+})();
 function playClip(url) {   // resolves when the clip ends or is stopped; rejects if the browser refuses to play
   return new Promise((resolve, reject) => {
     const audio = new Audio(url);
+    voiceViz.connect(audio);
     state.audio = audio;
     audio.onended = audio.onpause = () => resolve();
     audio.onerror = () => reject(new Error("The browser could not play the audio"));

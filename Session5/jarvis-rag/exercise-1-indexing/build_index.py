@@ -10,7 +10,7 @@ import sys  # טוענים כלי עבור דיווח קוד סיום והודע
 import time  # טוענים כלי עבור מדידת משך ההכנה
 from pathlib import Path  # משתמשים בנתיבים שמאפשרים לפתוח ולשמור את קבצי התרגיל
 from index_support import (BASE, REQUIRED, digest, load_documents, load_vault, validate_pieces,  # טוענים את פונקציות העזר הדרושות לשלב הנוכחי
-                           resolve_model, embed_texts, fixture_vectors, validate_vectors)  # משלימים את ביטוי הנתונים של build_index תוך שמירה על המבנה המוצג
+                           resolve_model, embed_texts, fixture_vectors, validate_vectors, VAULT_INCLUDE)  # משלימים את ביטוי הנתונים של build_index תוך שמירה על המבנה המוצג
 
 
 def prepare(args):  # מכינים קטעי מקור עם metadata לפני יצירת embeddings
@@ -21,7 +21,7 @@ def prepare(args):  # מכינים קטעי מקור עם metadata לפני יצ
     spec.loader.exec_module(module)  # משלימים את ביטוי הנתונים של prepare תוך שמירה על המבנה המוצג
     documents = [] if args.no_course_docs else load_documents(args.documents)  # טוענים את מסמכי המקור לתרגול
     if args.vault:  # מפגש 5: פתקי Obsidian מתוך הכספת (Projects + Meetings)
-        include = tuple(name.strip() for name in args.vault_include.split(",") if name.strip())
+        include = VAULT_INCLUDE if args.vault_include is None else tuple(name.strip() for name in args.vault_include.split(",") if name.strip())
         documents += load_vault(args.vault, include)
     if not documents:
         raise ValueError("No documents to index")
@@ -177,8 +177,8 @@ def main():  # מגדירים אפשרויות הרצה ומפעילים את ה
     p = sub.add_parser("prepare")  # מגדירים פקודה נפרדת לשלב בתהליך האינדוקס
     p.add_argument("--documents", default=str(BASE / "documents"))  # מגדירים אפשרות הרצה: --documents
     p.add_argument("--vault", help="Session 5: also index the notes of this Obsidian vault")
-    p.add_argument("--vault-include", default="Projects,Meetings",
-                   help="Vault folders to index (comma-separated); the whole vault if none of them exist")
+    p.add_argument("--vault-include", default=None,
+                   help="Vault folders to index (comma-separated); default: JARVIS_VAULT_INCLUDE, else the whole vault")
     p.add_argument("--no-course-docs", action="store_true", help="Index only the vault, not documents/")
     p.add_argument("--implementation", default=str(BASE / "chunking.py"))  # מגדירים אפשרות הרצה: --implementation
     p.add_argument("--max-chars", type=int, default=900)  # מגדירים אפשרות הרצה: --max-chars

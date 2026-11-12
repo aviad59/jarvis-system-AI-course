@@ -202,8 +202,12 @@ body[data-state="thinking"] { --speed: 4; }
 body[data-state="listening"] { --speed: 2; }
 body[data-state="speaking"] { --speed: 2.5; }
 body[data-state="thinking"] .core .nucleus { animation-duration: 0.9s; }
-body[data-state="speaking"] .core .nucleus { animation: talk 0.35s ease-in-out infinite alternate; }
-@keyframes talk { to { transform: scale(1.18); } }
+/* Speaking: the nucleus, halo and voice bars follow the voice (--level and the bars are set by voiceViz in app.js). */
+.core .voice line { stroke: var(--cyan-bright); stroke-width: 3; stroke-linecap: round; opacity: 0; transition: opacity 0.25s; }
+body[data-state="speaking"] .core .voice line { opacity: 0.9; }
+body[data-state="speaking"] .core .nucleus { animation: none; transform: scale(calc(1 + var(--level) * 0.35)); transition: transform 0.05s; }
+body[data-state="speaking"] .core .nucleus-ring { transform-origin: 200px 200px; transform: scale(calc(1 + var(--level) * 0.5)); opacity: calc(0.5 + var(--level) * 0.5); }
+body[data-state="speaking"] .core { filter: drop-shadow(0 0 calc(14px + var(--level) * 22px) rgba(84, 214, 255, 0.7)); }
 body[data-state="listening"] .core .ring, body[data-state="listening"] .brand-mark { stroke: var(--gold); border-color: var(--gold); }
 body[data-state="listening"] .core { filter: drop-shadow(0 0 18px rgba(255, 207, 107, 0.6)); }
 body[data-state="listening"] .core-label span { color: var(--gold); }

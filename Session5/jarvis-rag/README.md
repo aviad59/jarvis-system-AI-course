@@ -15,8 +15,8 @@ Everything needed to run it is in this folder.
 | `../../social-mcp/` | MCP tool | **YouTube Shorts** skill: Jarvis calls the free `youtube-shorts` MCP server (no login). *Ask Jarvis* sends YouTube requests there automatically. Set it up once, see `social-mcp/README.md` |
 
 Vault: `C:\Users\maest\Documents\Obsidian Vault` by default (set `JARVIS_VAULT` to change it).
-Only `Projects/` and `Meetings/` are indexed (the whole vault if neither exists); `.obsidian`,
-`Templates`, `Drafts` and `indexing-scope.md` are always skipped.
+Every note in the vault is indexed, in any folder (a new folder too); `.obsidian`, `Templates`, `Drafts`
+and `indexing-scope.md` are always skipped. To index only some folders: `JARVIS_VAULT_INCLUDE=Projects,Meetings`.
 
 ## 1. Setup (once)
 

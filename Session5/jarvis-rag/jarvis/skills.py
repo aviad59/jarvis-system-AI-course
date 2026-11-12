@@ -17,7 +17,9 @@ To add a skill: subclass Skill, implement stages() and run(), and add an instanc
 import json  # read pipeline output files
 import os  # platform check for venv paths
 import sys  # Python executable for child processes
+import re  # tidy a search query
 import tempfile  # MCP tool result file
+import urllib.request  # ask the answer model for a search query
 import time  # stage timing
 from pathlib import Path  # paths to the MCP server
 import rag  # the RAG pipeline steps and paths
@@ -240,6 +242,49 @@ class ShortsSkill(Skill):  # Jarvis as an MCP client: calls the free youtube-sho
         run.emit("posts", tool=tool, query=request["question"], posts=posts)
 
 
+QUERY_SCHEMA = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"],
+                "additionalProperties": False}
+QUERY_PROMPT = ("Turn an answer into a YouTube search.\n\n"
+                "Example 1. Request: what does the team like to eat? find shorts about it. "
+                "Answer: Dana loves sushi; Avi eats burgers. -> {{\"query\": \"sushi burgers\"}}\n"
+                "Example 2. Request: מה הוחלט בישיבה? תמצא סרטונים על זה. "
+                "Answer: הוחלט לעבור ל-Kubernetes. -> {{\"query\": \"Kubernetes\"}}\n\n"
+                "Request: {request}\nAnswer:\n{answer}\n\n"
+                "Search for the specific things the ANSWER names (foods, tools, places, topics), 1 to 5 words, in the "
+                "language of the answer. Never repeat the request's own words (team, meeting, likes, eat, find, shorts, "
+                "video). If the answer names nothing specific, return an empty query. Reply as JSON: {{\"query\": \"...\"}}")
+
+
+def search_query(request_text, claims, provider, model, key=None, timeout=90):  # the notes' answer -> a Shorts search query
+    prompt = QUERY_PROMPT.format(request=request_text, answer="\n".join("- " + c for c in claims))
+    if provider == "anthropic":
+        url, headers = "https://api.anthropic.com/v1/messages", {"x-api-key": key, "anthropic-version": "2026-10-21"}
+        payload = {"model": model, "max_tokens": 200, "messages": [{"role": "user", "content": prompt}],
+                   "output_config": {"format": {"type": "json_schema", "schema": QUERY_SCHEMA}}}
+    else:
+        url, headers = "http://localhost:11434/api/chat", {}
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "format": QUERY_SCHEMA,
+                   "stream": False, "options": {"temperature": 0}}
+    body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
+    call = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST")
+    with urllib.request.urlopen(call, timeout=timeout) as response:
+        reply = json.loads(response.read().decode("utf-8"))
+    if provider == "anthropic":
+        text = "".join(b.get("text", "") for b in reply.get("content", []) if b.get("type") == "text")
+    else:
+        text = reply.get("message", {}).get("content", "")
+    return clean_query(json.loads(text).get("query", ""))
+
+
+def clean_query(text):
+    text = re.sub(r"\[[^\]]*\]|\(S\d+\)|[\"“”]", " ", str(text or ""))  # citation marks, quotes
+    return re.sub(r"\s+", " ", text).strip()[:100]
+
+
+def fallback_query(claims):  # no model reply: the first claim, cut to a search-sized phrase
+    return " ".join(clean_query(claims[0]).rstrip(".").split()[:8]) if claims else ""
+
+
 class JarvisSkill(Skill):  # one input for everything: router.py picks the skill, then that skill runs as usual
     name, title = "jarvis", "Ask Jarvis"
     description = ("Ask anything: questions go to your documents, YouTube requests (\"find shorts about cooking\", "
@@ -260,6 +305,12 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
         if len(question) > MAX_QUESTION:
             raise ValueError(f"Request is longer than {MAX_QUESTION} characters")
         target = router.route(question)
+        if target.skill == "combo":  # notes first, then YouTube: validate both halves now
+            inner = SKILLS["rag"].validate({**clean, "question": target.question})
+            shorts = SKILLS["shorts"].validate({**clean, **target.options, "question": "(from the answer)"})
+            return {**clean, "question": question,
+                    "route": {"skill": "combo", "reason": target.reason, "title": "Notes → YouTube Shorts",
+                              "request": inner, "shorts": shorts}}
         if target.skill == "shorts" and not target.question:
             raise ValueError("What should I look for on YouTube? e.g. \"find shorts about cooking\" or \"@MrBeast\"")
         skill = SKILLS[target.skill]
@@ -269,6 +320,9 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
 
     def stages(self, request):
         target = request["route"]
+        if target["skill"] == "combo":
+            return [{"id": "route", "title": "Understand request"}, *SKILLS["rag"].stages(target["request"]),
+                    {"id": "query", "title": "Answer → Shorts search"}, *SKILLS["shorts"].stages(target["shorts"])]
         return [{"id": "route", "title": "Understand request"}, *SKILLS[target["skill"]].stages(target["request"])]
 
     def run(self, request, run):
@@ -277,7 +331,32 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
         run.emit("log", stage="route", line=f"→ {target['title']}: {target['reason']}")
         run.emit("route", skill=target["skill"], title=target["title"], reason=target["reason"])
         run.emit("stage_end", stage="route", status="ok", seconds=0)
-        SKILLS[target["skill"]].run(target["request"], run)
+        if target["skill"] != "combo":
+            return SKILLS[target["skill"]].run(target["request"], run)
+        rag_request = target["request"]
+        SKILLS["rag"].run(rag_request, run)  # 1. answer from the notes (shown and cited as usual)
+        run.emit("stage_start", stage="query", title="Answer → Shorts search")  # 2. what to look for, from that answer
+        started = time.time()
+        claims = [c["text"] for c in json.loads(rag.ANSWER.read_text(encoding="utf-8"))["answer"]["claims"]]
+        provider = rag_request["provider"]
+        model = rag_request["model"] or rag.DEFAULT_MODELS[provider]
+        try:
+            if not claims:  # the notes didn't answer: nothing to search for
+                raise LookupError("no answer")
+            query = search_query(request["question"], claims, provider, model,
+                                 rag.find_anthropic_key()[0] if provider == "anthropic" else None)
+            run.emit("log", stage="query", line=f"{provider} · {model} → “{query}”")
+        except LookupError:
+            query = ""
+        except Exception as error:  # the search still runs, on the answer's own words
+            query = fallback_query(claims)
+            run.emit("log", stage="query", line=f"query model failed ({type(error).__name__}), using the answer: “{query}”")
+        run.check_cancelled()
+        run.emit("stage_end", stage="query", status="ok" if query else "warning", seconds=round(time.time() - started, 2))
+        if not query:
+            run.emit("message", text="The notes don't name anything to look up on YouTube, so I didn't search.")
+            return
+        SKILLS["shorts"].run({**target["shorts"], "question": query}, run)  # 3. the MCP tool
 
 
 SKILLS = {skill.name: skill for skill in (JarvisSkill(), RagSkill(), ShortsSkill(), VaultSyncSkill(), StatusSkill())}

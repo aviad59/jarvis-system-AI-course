@@ -4,6 +4,8 @@
   route("מה הוחלט בישיבת הצוות?")                    -> rag (questions about the notes are the default)
   route("@MrBeast")                                -> shorts, latest Shorts of the channel
   route("https://youtube.com/shorts/abc123")       -> shorts, details of that one Short
+  route("what does the team like to eat? find shorts about it")
+  route("תמצא לי שורטס על מה שהצוות אוהב לאכול") -> combo: answer from the notes, then Shorts built from the answer
   route("system check") / route("בדיקת מערכות")      -> status
   route("/shorts cats") / route("/docs ...")         -> force a skill
 
@@ -20,7 +22,7 @@ HANDLE = re.compile(r"(?<![\w@])@[A-Za-z0-9][\w.\-]{1,60}")
 STRONG = re.compile(r"\b(?:youtube|yt|shorts?)\b|יוטיוב|שורטס|שורטים|שורט\b", re.I)
 WEAK = re.compile(r"\b(?:videos?|clips?|reels?)\b|סרטונים|סרטון|קליפים|קליפ", re.I)
 VERB = re.compile(r"\b(?:find|show|search|get|fetch|look\s+up|give|bring|list|play)\b|"
-                  r"(?:^|\s)(?:ת?מצא|חפש|תחפש|תראה|הראה|הצג|תציג|תביא|הבא|תן|תני|תמצאי|תחפשי|תראי)(?=\s|$)", re.I)
+                  r"(?:^|\s)ו?(?:ת?מצא|חפש|תחפש|תראה|הראה|הצג|תציג|תביא|הבא|תן|תני|תמצאי|תחפשי|תראי)(?=\s|$)", re.I)
 CHANNEL_WORD = re.compile(r"\b(?:from\s+(?:the\s+)?channel|channel|from)\s+([^\s?!.,]+)|(?:^|\s)(?:ערוץ|מהערוץ|בערוץ)\s+([^\s?!.,]+)", re.I)
 SHORTS_WORD = re.compile(r"\bshorts?\b|שורטס|שורטים|שורט\b", re.I)
 # A question about the notes that happens to mention YouTube ("who owns the youtube project?") stays with the documents.
@@ -31,6 +33,14 @@ STATUS = re.compile(r"^\s*(?:run\s+(?:a\s+)?)?(?:system\s+(?:check|status)|statu
                     r"^\s*(?:תריץ\s+|תעשה\s+)?(?:בדיקת\s+מערכות|מצב\s+(?:ה)?מערכות?|סטטוס)\s*[?.!]*\s*$", re.I)
 SYNC = re.compile(r"^\s*(?:(?:re-?)?sync|re-?index)\s+(?:the\s+)?(?:vault|notes|obsidian)\s*[?.!]*\s*$|"
                   r"^\s*(?:סנכרן|תסנכרן|אנדקס\s+מחדש)\s+(?:את\s+)?(?:ה)?(?:כספת|פתקים|ווליט|vault|obsidian)\s*[?.!]*\s*$", re.I)
+# A YouTube request whose topic lives in the notes: it points back ("about it") or names something from the vault.
+REFERENCE = re.compile(r"\b(?:about|for|of|on)\s+(?:it|that|this|them|those|these)\b|"
+                       r"(?:^|\s)(?:על\s+(?:זה|זאת|זו|הנושא\s+הזה|הדבר\s+הזה)|עליו|עליה|עליהם|עליהן|לזה|מזה)(?=[\s?!.,]|$)", re.I)
+NOTES = re.compile(r"\b(?:team|teams|team's|our|meetings?|projects?|notes?|vault|obsidian|decided|agreed|summary)\b|"
+                   r"צוות|ישיב|פרויקט|פרוייקט|שלנו|בפתקים|בהערות|סוכם|הוחלט|סיכום", re.I)
+# "question? find shorts about it" / "... and show me videos" -> the notes part and the YouTube part
+CLAUSES = re.compile(r"[?!.\n]+|\s+(?:and|then)\s+(?=(?:find|show|search|get|give|bring|play)\b)|"
+                     r"\s+ו(?=(?:תמצא|תחפש|תראה|תביא|תן|מצא|חפש|הראה|תציג)(?:\s|$))", re.I)
 FORCE = {"docs": "rag", "rag": "rag", "ask": "rag", "shorts": "shorts", "youtube": "shorts", "yt": "shorts",
          "status": "status", "sync": "vault_sync"}
 # Filler around a Shorts query: "find me some youtube shorts about cooking please" -> "cooking"
@@ -45,7 +55,7 @@ FILLER = re.compile(
 
 @dataclass
 class Route:
-    skill: str  # rag | shorts | status | vault_sync
+    skill: str  # rag | shorts | combo | status | vault_sync
     question: str = ""  # what the target skill receives
     options: dict = field(default_factory=dict)  # extra request values, e.g. {"mode": "channel", "limit": 5}
     reason: str = ""  # shown in the console: why this skill was chosen
@@ -54,6 +64,17 @@ class Route:
 def shorts_query(text):
     words = FILLER.sub(" ", COUNT.sub(" ", text))
     return re.sub(r"\s+", " ", re.sub(r"[?!.,:;\"“”'׳]+", " ", words)).strip()
+
+
+def notes_question(text):  # the part of a combo request that the notes answer
+    parts = [p.strip() for p in CLAUSES.split(text) if p and p.strip()]
+    asked = [p for p in parts if not (STRONG.search(p) or WEAK.search(p))]
+    if asked:
+        return " ".join(asked)
+    topic = REFERENCE.sub(" ", shorts_query(text)).strip()  # "find shorts about the team's favorite food" -> "team's favorite food"
+    if topic.startswith("ש"):  # "על מה שהצוות אוהב" -> "מה שהצוות אוהב"
+        topic = "מה " + topic
+    return topic or text
 
 
 def count(text):
@@ -88,6 +109,10 @@ def route(text):
         strong = weak = None
     if handle and (strong or weak or len(shorts_query(text.replace(handle.group(0), ""))) == 0):
         return Route("shorts", handle.group(0), {"mode": "channel", **extra}, f"channel {handle.group(0)} → its latest Shorts")
+    if (strong or weak) and not handle and (REFERENCE.search(text) or NOTES.search(text)):
+        question = notes_question(text)
+        return Route("combo", question, {"mode": "search", **extra},
+                     "notes + YouTube → answer from your notes, then search Shorts about the answer")
     if strong or weak:
         channel = CHANNEL_WORD.search(text)
         name = channel and (channel.group(1) or channel.group(2))

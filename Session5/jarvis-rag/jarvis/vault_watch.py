@@ -68,7 +68,7 @@ def _loop(manager):
                 _state["text"] = "change waiting for the current run"
                 continue
             run_snapshot, pending = snapshot, False
-            _log(f"notes changed → re-indexing (run {run.id})")
+            _log(f"notes changed -> re-indexing (run {run.id})")
         except Exception as error:  # never let the watcher die; report and keep polling
             _log(f"error: {type(error).__name__}: {error}")
 

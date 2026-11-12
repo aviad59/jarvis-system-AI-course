@@ -6,6 +6,7 @@ import hashlib  # טוענים כלי עבור זיהוי תוכן באמצעו�
 import json  # טוענים כלי עבור קריאה וכתיבה של קבצי התוצרים
 import math  # טוענים כלי עבור חישוב אורכי וקטורים ובדיקת מספרים סופיים
 import re  # טוענים כלי עבור פיצול טקסט וקריאת שדות המקור
+import os  # JARVIS_VAULT_INCLUDE
 import time  # תאריך עדכון של פתק לפי זמן שינוי הקובץ
 import urllib.error  # טוענים כלי עבור זיהוי שגיאת חיבור או API
 import urllib.request  # טוענים כלי עבור שליחת בקשות HTTP לספק embeddings
@@ -39,7 +40,9 @@ def load_documents(directory):  # קוראים את קבצי המקור ואת �
 # ---------------------------------------------------------------------------
 # Obsidian vault (session 5): team notes as a document source
 # ---------------------------------------------------------------------------
-VAULT_INCLUDE = ("Projects", "Meetings")  # indexing-scope: only these folders are sources
+# Default: the whole vault, so a note in any folder (a new one too) is found. To narrow it, list folders:
+# JARVIS_VAULT_INCLUDE=Projects,Meetings  (the whole vault is used if none of them exist)
+VAULT_INCLUDE = tuple(n.strip() for n in os.environ.get("JARVIS_VAULT_INCLUDE", "").split(",") if n.strip())
 VAULT_EXCLUDE_DIRS = {".obsidian", ".trash", ".git", "Templates", "Drafts"}  # never indexed, even when scanning the whole vault
 VAULT_EXCLUDE_FILES = {"indexing-scope.md"}  # describes the scope; it is not team knowledge
 VAULT_PREFIX = "vault/"  # source = "vault/<path inside the vault>", so vault chunks are easy to tell apart

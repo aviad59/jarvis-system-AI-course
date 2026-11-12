@@ -32,8 +32,8 @@ put `ANTHROPIC_API_KEY=...` in a `.env` file next to `rag.py` and choose **Answe
 
 **Documents** chooses what is indexed: `vault` (default), `course` (the incident documents in
 `exercise-1-indexing/documents/`), or `both`. The vault is `~/Documents/Obsidian Vault`; set
-`JARVIS_VAULT=<folder>` to use another one. Only `Projects/` and `Meetings/` are indexed (the whole
-vault if neither exists); `.obsidian`, `Templates`, `Drafts` and `indexing-scope.md` never are.
+`JARVIS_VAULT=<folder>` to use another one. Every note is indexed, in any folder; `.obsidian`, `Templates`,
+`Drafts` and `indexing-scope.md` never are. `JARVIS_VAULT_INCLUDE=Projects,Meetings` limits it to those folders.
 Each chunk keeps the note's path, `meeting_date` and `project_id` (from Obsidian Properties).
 **Live updates:** while the server runs, `vault_watch.py` checks the vault every 2 s. When a note is
 added, edited or deleted, it waits until the vault has been quiet for 2 s, then starts a **Sync vault**
@@ -64,12 +64,19 @@ and the card shows the choice (`JARVIS · YOUTUBE SHORTS`, and the reason in the
 | `find me 5 youtube shorts about cooking`, `תמצא לי שורטס על בישול` | YouTube Shorts MCP · search (`5` sets the number of results) |
 | `@MrBeast`, `show me shorts from channel MrBeast`, `סרטונים מהערוץ MrBeast` | YouTube Shorts MCP · latest Shorts of the channel |
 | a YouTube link | YouTube Shorts MCP · details of that video |
+| `מה הצוות אוהב לאכול? תמצא לי שורטס על זה`, `find shorts about what the team likes to eat` | **notes → Shorts**: answer from the notes, turn the answer into a search (`פיצה פיתה`), then the MCP tool |
 | `system check` / `בדיקת מערכות`, `sync the vault` / `סנכרן את הכספת` | system check / vault re-index |
 | `/docs …`, `/shorts …` | that skill, whatever the words |
 
 Anything not clearly about YouTube or the system goes to the documents, so a question about the
 notes that mentions YouTube (`who owns the youtube channel project?`) is answered from the notes.
 Words such as "videos" alone need a verb (`show me cat videos`); add `/shorts` when in doubt.
+
+**Notes → Shorts** (RAG + MCP): a YouTube request that points at the notes ("about it", "על זה", or names the
+team, a meeting, a project) runs both. First the notes answer (with citations, as usual). Then the same model
+(Ollama or Claude) turns *the answer* into a short search query, and the youtube-shorts MCP tool runs it. If the
+query model fails, the answer's own words are searched; if the notes have no answer, nothing is searched.
+Jarvis reads the answer aloud, says what it found, then plays the first Short.
 
 Voice: click the mic (or Ctrl+Space) and speak. The question runs automatically when you
 pause, and the answer is read aloud when *Voice replies* is on. If the recognizer isn't
@@ -110,6 +117,9 @@ browser as it is synthesized, so playback starts in about 1–2 s; a replayed an
 YouTube Shorts: results play inside the console (an embedded YouTube player, no links out). With *Voice
 replies* on, Jarvis first says what it found, then starts the first Short; click another one in the list to
 switch. Replayed runs show the player paused.
+
+While Jarvis speaks, the core (the circle at the top) talks: the nucleus and a ring of voice bars move with
+the actual sound of the voice.
 
 Offline fallback: if the service can't be reached, Jarvis switches automatically to Meta's MMS-TTS running
 locally on the CPU (`facebook/mms-tts-heb` / `mms-tts-eng`, preloaded in the background at start), and tries

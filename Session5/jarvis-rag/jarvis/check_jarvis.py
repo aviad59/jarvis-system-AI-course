@@ -139,6 +139,72 @@ class JarvisServer(unittest.TestCase):
             got = router.route(text)
             self.assertEqual((got.skill, got.question), ("rag", text), text)  # questions about the notes stay with the notes
 
+    def test_router_chains_notes_and_youtube(self):  # a YouTube request about something in the notes -> combo
+        import router
+        cases = {
+            "מה הצוות אוהב לאכול? תמצא לי שורטס על זה": "מה הצוות אוהב לאכול",
+            "מה הצוות אוהב לאכול ותביא לי סרטונים": "מה הצוות אוהב לאכול",
+            "תמצא לי שורטס על מה שהצוות אוהב לאכול": "מה שהצוות אוהב לאכול",
+            "what does the team like to eat and find shorts about it": "what does the team like to eat",
+        }
+        for text, question in cases.items():
+            got = router.route(text)
+            self.assertEqual((got.skill, got.question), ("combo", question), text)
+        self.assertEqual(router.route("find shorts about teamwork").skill, "shorts")  # no notes topic: YouTube only
+
+    def test_combo_answers_from_notes_then_searches_shorts(self):  # RAG and the MCP call are stubbed
+        import rag
+        calls = []
+
+        class FakeRag(skills.RagSkill):
+            def stages(self, request):
+                return [{"id": "answer", "title": "Answer"}]
+
+            def run(self, request, run):
+                calls.append(("rag", request["question"]))
+                run.emit("answer", claims=[{"text": "The team loves pizza [S1].", "citation_ids": []}], missing_information=[],
+                         sources=[], citation_status="ok", invalid_source_ids=[], provider="ollama", model="m", seconds=0)
+
+        class FakeShorts(skills.ShortsSkill):
+            def run(self, request, run):
+                calls.append(("shorts", request["question"]))
+                run.emit("posts", tool="search_youtube_shorts", query=request["question"], posts=[])
+
+        with tempfile.TemporaryDirectory() as folder:
+            answer = Path(folder) / "answer.json"
+            answer.write_text(json.dumps({"answer": {"claims": [{"text": "The team loves pizza [S1]."}]}}), encoding="utf-8")
+            saved = skills.SKILLS["rag"], skills.SKILLS["shorts"], rag.ANSWER, skills.search_query
+            skills.SKILLS["rag"], skills.SKILLS["shorts"], rag.ANSWER = FakeRag(), FakeShorts(), answer
+            skills.search_query = lambda *a, **k: "pizza recipe"
+            try:
+                self.wait_idle()
+                code, data = self.json("/api/runs", {"skill": "jarvis", "request": {
+                    "question": "what does the team like to eat? find shorts about it"}})
+                self.assertEqual(code, 202)
+                events = self.events(data["run_id"])
+                self.assertEqual([s["id"] for s in events[0]["stages"]], ["route", "answer", "query", "mcp"])
+                self.assertEqual(calls, [("rag", "what does the team like to eat"), ("shorts", "pizza recipe")])
+                skills.search_query = lambda *a, **k: 1 / 0  # model down: search with the answer's own words
+                calls.clear()
+                self.wait_idle()
+                code, data = self.json("/api/runs", {"skill": "jarvis", "request": {
+                    "question": "what does the team like to eat? find shorts about it"}})
+                self.events(data["run_id"])
+                self.assertEqual(calls[-1], ("shorts", "The team loves pizza"))
+            finally:
+                skills.SKILLS["rag"], skills.SKILLS["shorts"], rag.ANSWER, skills.search_query = saved
+
+    def test_vault_scope_defaults_to_whole_vault(self):  # a note in any folder, a new one too, is indexed
+        support = sys.modules.get("index_support") or __import__("index_support")
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            for rel in ("projects/p.md", "Team likes/food.md", "meeting.md", ".obsidian/x.md", "Templates/t.md"):
+                (vault / rel).parent.mkdir(parents=True, exist_ok=True)
+                (vault / rel).write_text("# note\nbody", encoding="utf-8")
+            files, scope = support.vault_files(vault, ())
+            names = sorted(f.relative_to(vault).as_posix() for f in files)
+            self.assertEqual((scope, names), ("whole vault", ["Team likes/food.md", "meeting.md", "projects/p.md"]))
+
     def test_ask_jarvis_routes_and_runs_the_target_skill(self):  # the Shorts skill is stubbed: no network
         class FakeShorts(skills.ShortsSkill):
             def run(self, request, run):
@@ -197,7 +263,7 @@ class JarvisServer(unittest.TestCase):
             (root / "Projects" / "p.md").write_text("# Project\n\nGoal.\n", encoding="utf-8")
             for skipped in ("Drafts/d.md", "Templates/t.md", ".obsidian/x.md", "indexing-scope.md", "loose.md"):
                 (root / skipped).write_text("# skip\n\nno\n", encoding="utf-8")
-            documents = {d["source"]: d for d in index_support.load_vault(root)}
+            documents = {d["source"]: d for d in index_support.load_vault(root, ("Projects", "Meetings"))}  # narrowed scope
             self.assertEqual(set(documents), {"vault/Meetings/m1.md", "vault/Projects/p.md"})
             meeting = documents["vault/Meetings/m1.md"]
             self.assertEqual((meeting["title"], meeting["project_id"], meeting["meeting_date"], meeting["updated"]),
