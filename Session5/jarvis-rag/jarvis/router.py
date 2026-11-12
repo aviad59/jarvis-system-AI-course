@@ -7,6 +7,7 @@
   route("what does the team like to eat? find shorts about it")
   route("תמצא לי שורטס על מה שהצוות אוהב לאכול") -> combo: answer from the notes, then Shorts built from the answer
   route("make a meme about monday meetings")       -> meme (the memes MCP server; "תעשה מם על..." too)
+  route("tell me a joke about programmers")         -> meme too: a joke is answered with a meme ("תספר לי בדיחה")
   route("system check") / route("בדיקת מערכות")      -> status
   route("/shorts cats") / route("/docs ...")         -> force a skill
 
@@ -35,20 +36,34 @@ STATUS = re.compile(r"^\s*(?:run\s+(?:a\s+)?)?(?:system\s+(?:check|status)|statu
 SYNC = re.compile(r"^\s*(?:(?:re-?)?sync|re-?index)\s+(?:the\s+)?(?:vault|notes|obsidian)\s*[?.!]*\s*$|"
                   r"^\s*(?:סנכרן|תסנכרן|אנדקס\s+מחדש)\s+(?:את\s+)?(?:ה)?(?:כספת|פתקים|ווליט|vault|obsidian)\s*[?.!]*\s*$", re.I)
 # A YouTube request whose topic lives in the notes: it points back ("about it") or names something from the vault.
-REFERENCE = re.compile(r"\b(?:about|for|of|on)\s+(?:it|that|this|them|those|these)\b|"
+REFERENCE = re.compile(r"\b(?:about|for|of|on)\s+(?:it|that|this|them|those|these)\b|\bbetween\s+them\b|"
+                       r"\b(?:this|that|these|those)\s+(?:situation|info|information|story|thing|answer|relationship)s?\b|"
+                       r"(?:^|\s)(?:ביניהם|ביניהן|בינהם|בינהן|שלהם|שלהן)(?=[\s?!.,]|$)|"
+                       r"(?:^|\s)\S+\s+(?:הזה|הזאת|הזו|האלה|האלו)(?=[\s?!.,]|$)|"
                        r"(?:^|\s)(?:על\s+(?:זה|זאת|זו|הנושא\s+הזה|הדבר\s+הזה)|עליו|עליה|עליהם|עליהן|לזה|מזה)(?=[\s?!.,]|$)", re.I)
 NOTES = re.compile(r"\b(?:team|teams|team's|our|meetings?|projects?|notes?|vault|obsidian|decided|agreed|summary)\b|"
                    r"צוות|ישיב|פרויקט|פרוייקט|שלנו|בפתקים|בהערות|סוכם|הוחלט|סיכום", re.I)
 # "question? find shorts about it" / "... and show me videos" -> the notes part and the YouTube part
-CLAUSES = re.compile(r"[?!.\n]+|\s+(?:and|then)\s+(?=(?:find|show|search|get|give|bring|play)\b)|"
+CLAUSES = re.compile(r"[?!.\n]+|\s+(?:and\s+then|then|and)\s+(?=(?:find|show|search|get|give|bring|play|make)\b)|"
+                     r"\s+(?:ו?אז|ואחר\s+כך|אחר\s+כך|ואחרי\s+זה|אחרי\s+זה)\s+|"
                      r"\s+ו(?=(?:תמצא|תחפש|תראה|תביא|תן|מצא|חפש|הראה|תציג)(?:\s|$))", re.I)
 PRONOUN = re.compile(r"(?:^|\s)(?:it|that|this|them|those|these|זה|זאת|זו|הזה|הזאת|אותו|אותה|אותם)(?=\s|$)", re.I)
 FORCE = {"docs": "rag", "rag": "rag", "ask": "rag", "shorts": "shorts", "youtube": "shorts", "yt": "shorts",
          "meme": "meme", "memes": "meme", "status": "status", "sync": "vault_sync"}
 # "make a meme about ..." / "תעשה לי מם על ...": the meme word plus a make verb (a question about memes stays with the notes)
 MEME = re.compile(r"\bmemes?\b|(?:^|\s)(?:ה?מם|ה?מימ|ממים|מימז)(?=[\s?!.,:]|$)", re.I)
+# Speech-to-text spells "מם" / "מימז" as "מים" (water) or "לימים": a meme only with a make verb, and "מים" only
+# before "על / של / עם" ("תעשה לי מים על בצלאל"), so "תביא לי מים" stays water.
+MEME_HEARD = re.compile(r"(?:^|\s)(?:לימים|לימימ|לימז|לימימז|מימס|ממז)(?=[\s?!.,:]|$)|"
+                        r"(?:^|\s)ה?מים\s+(?:על|של|עם|בנושא)(?=\s|$)")
 MAKE = re.compile(r"\b(?:make|create|generate|build|draw|do|give|send|write)\b|"
                   r"(?:^|\s)(?:תעשה|תעשי|תכין|תכיני|צור|תיצור|תייצר|עשה|הכן|תן|תני|תביא|תמציא|תכתוב)(?=\s|$)", re.I)
+# A joke request is answered with a meme: "tell me a joke", "make me laugh", "תספר לי בדיחה", "תצחיק אותי".
+# A question about a joke ("what joke did Idan tell at the meeting?") stays with the notes.
+JOKE = re.compile(r"\bjokes?\b|\bmake\s+(?:me|us)\s+laugh\b|\bsomething\s+funny\b|\bcheer\s+me\s+up\b|"
+                  r"(?:^|\s)(?:ה?בדיחה|בדיחות|ה?בדיחות|תצחיק|תצחיקי|משהו\s+מצחיק|תשמח\s+אותי)(?=[\s?!.,:]|$)", re.I)
+TELL = re.compile(r"\btell\s+(?:me|us|an?)\b|\b(?:know|got|have)\s+(?:any|an?)\b|\bsay\s+an?\b|"
+                  r"(?:^|\s)(?:ספר|תספר|תספרי|תגיד|תגידי|יש\s+לך|תצחיק|תצחיקי|תשמח)(?=\s|$)", re.I)
 # Filler around a Shorts query: "find me some youtube shorts about cooking please" -> "cooking"
 FILLER = re.compile(
     r"\b(?:please|can|could|would|you|me|us|some|a|an|the|few|couple|of|about|on|for|with|related|to|regarding|"
@@ -77,6 +92,8 @@ def notes_question(text):  # the part of a combo request that the notes answer
     asked = [p for p in parts if not (STRONG.search(p) or WEAK.search(p))]
     if asked:
         return " ".join(asked)
+    if REFERENCE.search(text):  # "a video that shows the relationship between them": about the previous answer
+        return ""
     topic = PRONOUN.sub(" ", REFERENCE.sub(" ", shorts_query(text))).strip()  # "find shorts about the team's food" -> "team's food"
     if topic.startswith("ש"):  # "על מה שהצוות אוהב" -> "מה שהצוות אוהב"
         topic = "מה " + topic
@@ -102,8 +119,11 @@ def route(text):
         return Route(skill, rest, {}, f"/{forced.group(1)} → {skill}")
     if STATUS.match(text):
         return Route("status", "", {}, "system check request")
-    if MEME.search(text) and (MAKE.search(text) or not (QUESTION.match(text) or STRONG.search(text))):
+    if (MEME.search(text) and (MAKE.search(text) or not (QUESTION.match(text) or STRONG.search(text)))) or \
+            (MEME_HEARD.search(text) and MAKE.search(text)):
         return Route("meme", text, {}, "meme request → the memes MCP server")
+    if JOKE.search(text) and not STRONG.search(text) and (MAKE.search(text) or TELL.search(text) or not QUESTION.match(text)):
+        return Route("meme", text, {}, "joke request → a meme from the memes MCP server")
     if SYNC.match(text):
         return Route("vault_sync", "", {}, "vault sync request")
     url = YOUTUBE_URL.search(text)

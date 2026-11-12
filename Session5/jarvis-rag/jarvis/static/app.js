@@ -357,7 +357,7 @@ const HANDLERS = {
     const foot = el("div", { class: "answer-foot" }, el("span", { text: `template ${e.template}` }),
       el("span", { text: e.renderer === "local" ? "drawn locally (Hebrew)" : "Memegen" }), el("span", { text: "MCP tool: generate_meme" }));
     fillCard(head, image, foot);
-    state.lastAnswer = e.hebrew ? "הנה המם שלך." : "Here's your meme.";
+    say(e.hebrew ? "הנה המם שלך." : "Here's your meme.");   // after the notes answer, when there is one
   },
   status(e) { renderSystems(e.systems); },
   error(e) {

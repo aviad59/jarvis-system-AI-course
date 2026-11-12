@@ -328,7 +328,7 @@ def clean_history(value):  # [{question, answer}] from the browser: strings only
 
 
 def needs_rewrite(question, history):  # a follow-up that can't be searched on its own words
-    return bool(history) and (len(question.split()) <= 4 or bool(FOLLOW_UP.search(question)))
+    return bool(history) and (len(question.split()) <= 2 or bool(FOLLOW_UP.search(question)))  # "והראל?", "and him?"
 
 
 def standalone_question(question, history, provider, model):
@@ -351,7 +351,25 @@ def fallback_query(claims):  # no model reply: the first claim, cut to a search-
 HEBREW_PREFIXES = "והבכלמש"  # "ועידן", "לעידן", "שעידן" -> "עידן"
 COMMON = {"the", "and", "for", "with", "about", "this", "that", "what", "how", "who", "של", "על", "עם", "את", "זה",
           "מה", "מי", "איך", "לי", "גם", "או", "אם", "כל", "יש", "אין", "הוא", "היא", "הם", "אני", "אתה", "שלי"}
-_vault_words = {"snapshot": None, "words": set()}
+_vault_words = {"snapshot": None, "words": set(), "sounds": set(), "pairs": set(), "frequent": set()}
+FREQUENT_NAME = 5  # a short name ("Omer" -> "mr") counts alone only if the notes use it this often (a chat participant)
+# Sound keys: consonants only, the same for both scripts ("ברנשטיין" / "Bernstein" -> "brnstn", "עומר" / "Omer" -> "mr")
+HEBREW_SOUNDS = {"ב": "b", "ג": "g", "ד": "d", "ז": "z", "ט": "t", "כ": "k", "ך": "k", "ל": "l", "מ": "m", "ם": "m",
+                 "נ": "n", "ן": "n", "ס": "s", "פ": "p", "ף": "p", "צ": "s", "ץ": "s", "ק": "k", "ר": "r", "ש": "s", "ת": "t"}
+LATIN_SOUNDS = (("sch", "s"), ("sh", "s"), ("ch", "h"), ("ph", "p"), ("ck", "k"), ("tz", "s"), ("ts", "s"), ("th", "t"),
+                ("w", "b"), ("v", "b"), ("f", "p"), ("c", "k"), ("q", "k"), ("x", "ks"), ("j", "g"))
+NAME = re.compile(r"\b[A-Z][a-z]{1,20}\b")  # a capitalized Latin word: names in a chat export ("Omer Bernstein:")
+
+
+def sound_key(word):
+    word = word.lower()
+    if re.search(r"[֐-׿]", word):
+        key = "".join(HEBREW_SOUNDS.get(c, "") for c in word)  # א ה ו י ע ח: vowels / silent
+    else:
+        for a, b in LATIN_SOUNDS:
+            word = word.replace(a, b)
+        key = re.sub(r"[aeiouyh\W\d_]", "", word)
+    return re.sub(r"(.)\1+", r"\1", key)
 
 
 def _forms(word):  # a word and its forms without up to two Hebrew prefix letters ("ולעידן" -> "לעידן", "עידן")
@@ -370,11 +388,19 @@ def vault_words():  # every word in the notes, cached until a note changes
         return set()
     if snapshot != _vault_words["snapshot"]:
         files, _ = support.vault_files(rag.VAULT)
-        words = set()
+        words, sounds, pairs, counts = set(), set(), set(), {}
         for doc in support._read_vault(rag.VAULT, files, quiet=True):
-            for word in re.findall(r"\w{2,}", f"{doc.get('title', '')} {doc.get('body', '')} {doc.get('path', '')}"):
+            text = f"{doc.get('title', '')} {doc.get('body', '')} {doc.get('path', '')}"
+            for word in re.findall(r"\w{2,}", text):
                 words |= _forms(word)
-        _vault_words.update(snapshot=snapshot, words=words - COMMON)
+            for line in text.splitlines():
+                names = [sound_key(n) for n in NAME.findall(line)]
+                sounds.update(k for k in names if len(k) >= 3)
+                for k in names:
+                    counts[k] = counts.get(k, 0) + 1
+                pairs.update(f"{a} {b}" for a, b in zip(names, names[1:]) if a and b)  # "Omer Bernstein" -> "mr brnstn"
+        frequent = {k for k, n in counts.items() if len(k) >= 2 and n >= FREQUENT_NAME}
+        _vault_words.update(snapshot=snapshot, words=words - COMMON, sounds=sounds, pairs=pairs, frequent=frequent)
     return _vault_words["words"]
 
 
@@ -383,7 +409,18 @@ def vault_mentions(topic):  # the topic's words that also appear in the notes
         known = vault_words()
     except Exception:  # vault missing or unreadable: plain YouTube search
         return []
-    return [w for w in re.findall(r"\w{2,}", topic) if w.lower() not in COMMON and _forms(w) & known]
+    words = [w for w in re.findall(r"\w{2,}", topic) if w.lower() not in COMMON]
+    found = [w for w in words if _forms(w) & known]
+    hebrew = [w for w in words if re.search(r"[֐-׿]", w)]  # Hebrew request, names written in English
+    keys = [sound_key(w) for w in hebrew]
+    for i, (word, key) in enumerate(zip(hebrew, keys)):
+        stripped = {sound_key(f) for f in _forms(word)}
+        if word not in found and (any(len(k) >= 4 and k in _vault_words["sounds"] or k in _vault_words["frequent"]
+                                      for k in stripped)
+                                  or (i + 1 < len(keys) and f"{key} {keys[i + 1]}" in _vault_words["pairs"])
+                                  or (i > 0 and f"{keys[i - 1]} {key}" in _vault_words["pairs"])):
+            found.append(word)
+    return found
 
 
 MEME_PROMPT = ("You write memes. Topic: {request}\n\n"
@@ -395,13 +432,19 @@ MEME_SHORTLIST = ("drake", "fry", "buzz", "doge", "fine", "rollsafe", "success",
                   "kermit", "both", "yuno", "aag", "ackbar", "afraid", "blb", "captain", "cheems", "disastergirl",
                   "grumpycat", "interesting", "khaby-lame", "morpheus", "mordor", "officespace", "philosoraptor", "pooh",
                   "scc", "stonks", "wonka", "xy", "yodawg", "toohigh", "worst")
-MEME_WORDS = re.compile(r"\b(?:make|create|generate|build|draw|do|give|show|send|me|a|an|the|some|funny|new|please|"
+MEME_WORDS = re.compile(r"\b(?:you|your|tell|say|know|any|got|jokes?|laugh|cheer|up|us|something|"
+                        r"make|create|generate|build|draw|do|give|show|send|me|a|an|the|some|funny|new|please|"
                         r"memes?|about|of|on|for|with|template)\b|(?:^|\s)(?:תעשה|תכין|צור|תיצור|תייצר|עשה|הכן|תן|תביא|"
-                        r"תראה|תמציא|לי|מם|מימ|ממים|מימז|מצחיק|על|בבקשה|של|עם)(?=\s|$)", re.I)
+                        r"תראה|תמציא|לי|מם|מימ|ממים|מימז|מצחיק|על|בבקשה|של|עם|ספר|תספר|תספרי|תגיד|תגידי|יש|לך|בדיחה|הבדיחה|"
+                        r"בדיחות|תצחיק|תצחיקי|אותי|אותנו|משהו|תשמח|לימים|לימימ|לימז|לימימז|מימס|ממז|מים|המים)(?=[\s?!.,:]|$)", re.I)
 
 
-def _meme_topic(text):  # "make me a funny meme about monday meetings" -> "monday meetings"
-    return re.sub(r"\s+", " ", MEME_WORDS.sub(" ", text)).strip(" :,.!?") or text
+def _meme_subject(text):  # "make me a funny meme about monday meetings" -> "monday meetings"; "" when there is none
+    return re.sub(r"\s+", " ", MEME_WORDS.sub(" ", text)).strip(" :,.!?")
+
+
+def _meme_topic(text):  # the subject, or the whole request ("tell me a joke": the model picks the joke)
+    return _meme_subject(text) or text
 
 
 def meme_captions(text):
@@ -534,8 +577,11 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
             run.emit("log", stage="plan", line=f"template {template} and captions from your words (no model needed)")
         else:
             try:
-                template, lines, by = self.write(_meme_topic(text) if not lines else text, template, templates,
-                                                 request["captions_by"])
+                topic = _meme_topic(text) if not lines else text
+                if request.get("facts"):  # from the user's notes: the joke is about these
+                    topic += ("\n\nWhat the user's own notes say about this (build the joke on these facts):\n"
+                              + "\n".join(f"- {fact}" for fact in request["facts"][:5]))
+                template, lines, by = self.write(topic, template, templates, request["captions_by"])
                 run.emit("log", stage="plan", line=f"{by} → {template}: {' / '.join(lines)}")
             except ValueError:
                 raise
@@ -560,6 +606,11 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
         run.emit("stage_end", stage="mcp", status="ok", seconds=round(time.time() - started, 2))
         run.emit("meme", image=image, template=template, name=data.get("name", template), text=lines,
                  renderer=data.get("renderer"), hebrew=bool(re.search(r"[֐-׿]", " ".join(lines) + text)))
+
+
+def notes_question_about(topic):  # "עומר ברנשטיין" -> "מה כתוב בפתקים על עומר ברנשטיין?"
+    hebrew = re.search(r"[\u0590-\u05FF]", topic)
+    return f"מה כתוב בפתקים על {topic}?" if hebrew else f"What do the notes say about {topic}?"
 
 
 class JarvisSkill(Skill):  # one input for everything: router.py picks the skill, then that skill runs as usual
@@ -588,7 +639,7 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
                      and not target.reason.startswith("/") else [])  # /shorts always means YouTube only
         if mentioned:  # "find shorts about Idan": Idan is in the notes -> what do the notes say about him, then YouTube
             words = " ".join(mentioned)
-            asked = f"מה כתוב בפתקים על {target.question}?" if re.search(r"[֐-׿]", target.question)                 else f"What do the notes say about {target.question}?"
+            asked = notes_question_about(target.question)
             target = router.Route("combo", asked, {**target.options, "fallback": target.question},
                                   f"“{words}” is in your notes → answer from the notes, then search Shorts about the answer")
         if target.skill == "combo":  # notes first, then YouTube: validate both halves now
@@ -601,6 +652,16 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
                     "route": {"skill": "combo", "reason": target.reason, "title": "Notes → YouTube Shorts",
                               "request": inner, "shorts": shorts, "follow_up": follow_up,
                               "fallback": target.options.get("fallback")}}
+        if target.skill == "meme" and not target.reason.startswith("/") and not meme_captions(target.question):
+            topic = _meme_subject(target.question)
+            mentioned = vault_mentions(topic) if topic else []  # "tell me a joke": no subject, nothing to look up
+            if mentioned:  # "תיצור לי בדיחה על עומר ברנשטיין": Omer is in the notes -> what they say about him, then the meme
+                inner = SKILLS["rag"].validate({**clean, "question": notes_question_about(topic), "history": history})
+                meme = SKILLS["meme"].validate({**clean, "question": target.question})
+                return {**clean, "question": question, "history": history,
+                        "route": {"skill": "notes_meme", "title": "Notes → Meme", "request": inner, "meme": meme,
+                                  "reason": f"“{' '.join(mentioned)}” is in your notes → answer from the notes, "
+                                            "then a meme built on that answer"}}
         if target.skill == "shorts" and not target.question:
             raise ValueError("What should I look for on YouTube? e.g. \"find shorts about cooking\" or \"@MrBeast\"")
         skill = SKILLS[target.skill]
@@ -610,6 +671,9 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
 
     def stages(self, request):
         target = request["route"]
+        if target["skill"] == "notes_meme":
+            return [{"id": "route", "title": "Understand request"}, *SKILLS["rag"].stages(target["request"]),
+                    *SKILLS["meme"].stages(target["meme"])]
         if target["skill"] == "combo":
             notes = SKILLS["rag"].stages(target["request"]) if target["request"] else []
             return [{"id": "route", "title": "Understand request"}, *notes,
@@ -622,6 +686,10 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
         run.emit("log", stage="route", line=f"→ {target['title']}: {target['reason']}")
         run.emit("route", skill=target["skill"], title=target["title"], reason=target["reason"])
         run.emit("stage_end", stage="route", status="ok", seconds=0)
+        if target["skill"] == "notes_meme":
+            SKILLS["rag"].run(target["request"], run)  # 1. what the notes say (shown and cited as usual)
+            claims = [c["text"] for c in json.loads(rag.ANSWER.read_text(encoding="utf-8"))["answer"]["claims"]]
+            return SKILLS["meme"].run({**target["meme"], "facts": claims}, run)  # 2. the meme, built on those facts
         if target["skill"] != "combo":
             return SKILLS[target["skill"]].run(target["request"], run)
         if target.get("follow_up"):  # "find shorts about it": the previous answer in this conversation

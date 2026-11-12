@@ -64,6 +64,7 @@ and the card shows the choice (`JARVIS · YOUTUBE SHORTS`, and the reason in the
 | `find me 5 youtube shorts about cooking`, `תמצא לי שורטס על בישול` | YouTube Shorts MCP · search (`5` sets the number of results) |
 | `@MrBeast`, `show me shorts from channel MrBeast`, `סרטונים מהערוץ MrBeast` | YouTube Shorts MCP · latest Shorts of the channel |
 | a YouTube link | YouTube Shorts MCP · details of that video |
+| `tell me a joke about programmers`, `תספר לי בדיחה`, `תצחיק אותי` | Memes MCP · a joke is answered with a meme (a question *about* a joke in the notes stays with the documents) |
 | `make a meme about monday meetings`, `תעשה לי מם על ישיבות`, `drake meme: writing tests / shipping on friday` | memes MCP · the meme in the card (Ollama writes captions unless you give them) |
 | `מה הצוות אוהב לאכול? תמצא לי שורטס על זה`, `find shorts about what the team likes to eat` | **notes → Shorts**: answer from the notes, turn the answer into a search (`פיצה פיתה`), then the MCP tool |
 | `system check` / `בדיקת מערכות`, `sync the vault` / `סנכרן את הכספת` | system check / vault re-index |
@@ -88,6 +89,11 @@ Jarvis reads the answer aloud, says what it found, then plays the first Short.
 A Shorts request whose topic appears in your notes (`תמצא לי שורטס על עידן`, where Idan is in a note) also
 goes to the notes first ("what do the notes say about Idan?") and searches YouTube with that answer; if the
 notes say nothing, the topic is searched as asked. `/shorts עידן` skips the notes.
+Names match across scripts by sound: `עומר ברנשטיין` finds **Omer Bernstein** in a WhatsApp export (`brnstn` both
+ways); a short first name alone (`עומר`) counts when the notes use it often. Memes and jokes work the same way:
+`תיצור לי בדיחה על עומר ברנשטיין` asks the notes about Omer, then writes the meme from that answer (`/meme …`
+skips the notes). A request that only points back (`סרטון שמייצג את היחסים ביניהם`, `this situation`) uses the
+previous answer; `תחפש מידע על X ואז תביא סרטון על המידע הזה` runs the notes, then YouTube.
 
 Voice: click the mic (or Ctrl+Space) and speak. The question runs automatically when you
 pause, and the answer is read aloud the moment it arrives when *Voice replies* is on (no Speak click). If the recognizer isn't
