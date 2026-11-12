@@ -83,19 +83,41 @@ class RagSkill(Skill):
         if len(question) > MAX_QUESTION:
             raise ValueError(f"Question is longer than {MAX_QUESTION} characters")
         clean["question"] = question
+        clean["history"] = clean_history(request.get("history"))
+        clean["rewrite"] = needs_rewrite(question, clean["history"])
         return clean
 
     def steps(self, request):
         return rag.build_steps(request["question"], skip_index=request["skip_index"], hybrid=request["hybrid"],
                                top_k=request["top_k"], exclude_superseded=request["exclude_superseded"],
                                provider=request["provider"], model=request["model"] or None, source=request["source"],
-                               documents=request["documents"])
+                               documents=request["documents"], history_file=rag.HISTORY if request.get("history") else None)
 
     def stages(self, request):
-        return [{"id": step["id"], "title": step["title"]} for step in self.steps(request)]
+        context = [{"id": "context", "title": "Understand follow-up"}] if request.get("rewrite") else []
+        return context + [{"id": step["id"], "title": step["title"]} for step in self.steps(request)]
+
+    def resolve(self, request, run):  # "and Harel?" -> "what does Harel like to eat?", so retrieval finds the right note
+        run.emit("stage_start", stage="context", title="Understand follow-up")
+        started, model = time.time(), request["model"] or rag.DEFAULT_MODELS[request["provider"]]
+        try:
+            question = standalone_question(request["question"], request["history"], request["provider"], model)
+            run.emit("log", stage="context", line=f"“{request['question']}” → “{question}”")
+            outcome = "ok"
+        except Exception as error:  # keep the question as asked; the answer model still sees the conversation
+            question, outcome = request["question"], "warning"
+            run.emit("log", stage="context", line=f"rewrite failed ({type(error).__name__}), searching the question as asked")
+        run.check_cancelled()
+        run.emit("stage_end", stage="context", status=outcome, seconds=round(time.time() - started, 2))
+        return {**request, "question": question}
 
     def run(self, request, run):
         LAST_INDEX.update(documents=request["documents"], source=request["source"])
+        if request.get("history"):  # the answer model sees the conversation (context only, not evidence)
+            rag.HISTORY.parent.mkdir(parents=True, exist_ok=True)
+            rag.HISTORY.write_text(json.dumps(request["history"], ensure_ascii=False), encoding="utf-8")
+        if request.get("rewrite"):
+            request = self.resolve(request, run)
         env = {}
         if request["provider"] == "anthropic":  # fail before indexing, not at the last stage
             key, _ = rag.find_anthropic_key()
@@ -255,15 +277,15 @@ QUERY_PROMPT = ("Turn an answer into a YouTube search.\n\n"
                 "video). If the answer names nothing specific, return an empty query. Reply as JSON: {{\"query\": \"...\"}}")
 
 
-def search_query(request_text, claims, provider, model, key=None, timeout=90):  # the notes' answer -> a Shorts search query
-    prompt = QUERY_PROMPT.format(request=request_text, answer="\n".join("- " + c for c in claims))
+def ask_json(prompt, schema, provider, model, timeout=90):  # one small structured call to the answer model
     if provider == "anthropic":
-        url, headers = "https://api.anthropic.com/v1/messages", {"x-api-key": key, "anthropic-version": "2026-10-21"}
-        payload = {"model": model, "max_tokens": 200, "messages": [{"role": "user", "content": prompt}],
-                   "output_config": {"format": {"type": "json_schema", "schema": QUERY_SCHEMA}}}
+        url = "https://api.anthropic.com/v1/messages"
+        headers = {"x-api-key": rag.find_anthropic_key()[0] or "", "anthropic-version": "2026-10-21"}
+        payload = {"model": model, "max_tokens": 300, "messages": [{"role": "user", "content": prompt}],
+                   "output_config": {"format": {"type": "json_schema", "schema": schema}}}
     else:
         url, headers = "http://localhost:11434/api/chat", {}
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "format": QUERY_SCHEMA,
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "format": schema,
                    "stream": False, "options": {"temperature": 0}}
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     call = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST")
@@ -273,7 +295,47 @@ def search_query(request_text, claims, provider, model, key=None, timeout=90):  
         text = "".join(b.get("text", "") for b in reply.get("content", []) if b.get("type") == "text")
     else:
         text = reply.get("message", {}).get("content", "")
-    return clean_query(json.loads(text).get("query", ""))
+    return json.loads(text)
+
+
+def search_query(request_text, claims, provider, model):  # the notes' answer -> a Shorts search query
+    prompt = QUERY_PROMPT.format(request=request_text, answer="\n".join("- " + c for c in claims))
+    return clean_query(ask_json(prompt, QUERY_SCHEMA, provider, model).get("query", ""))
+
+
+# The conversation so far (sent by the console), so follow-ups ("and Harel?", "find shorts about it") make sense.
+MAX_TURNS, MAX_TURN_CHARS = 6, 800
+FOLLOW_UP = re.compile(r"(?:^|\s)(?:it|that|this|he|she|they|him|her|them|his|its|their|those|these|also|"
+                       r"what\s+about|and|זה|זאת|זו|הוא|היא|הם|הן|שלו|שלה|שלהם|אותו|אותה|אותם|גם|עליו|עליה|עליהם|"
+                       r"לו|לה|להם|ומה|ומי|ואיך|ומתי|ואיפה|ולמה|וכמה|ואיזה)(?=[\s?!.,]|$)", re.I)
+REWRITE_SCHEMA = {"type": "object", "properties": {"question": {"type": "string"}}, "required": ["question"],
+                  "additionalProperties": False}
+REWRITE_PROMPT = ("Rewrite the LAST question so it stands alone, using the conversation to resolve words such as "
+                  "'it', 'he', 'that', 'and X?'. Keep its language. Do not answer it. If it already stands alone, "
+                  "return it unchanged.\n\nExample. Conversation: Q: מה עידן אוהב לאכול? A: עידן אוהב פיצות. "
+                  "Last question: והראל? -> {{\"question\": \"מה הראל אוהב לאכול?\"}}\n\n"
+                  "Conversation:\n{conversation}\n\nLast question: {question}\n\nReply as JSON: {{\"question\": \"...\"}}")
+
+
+def clean_history(value):  # [{question, answer}] from the browser: strings only, recent turns only, bounded size
+    turns = []
+    for turn in value if isinstance(value, list) else []:
+        if isinstance(turn, dict):
+            q, a = (str(turn.get(k) or "").strip()[:MAX_TURN_CHARS] for k in ("question", "answer"))
+            if q and a:
+                turns.append({"question": q, "answer": a})
+    return turns[-MAX_TURNS:]
+
+
+def needs_rewrite(question, history):  # a follow-up that can't be searched on its own words
+    return bool(history) and (len(question.split()) <= 4 or bool(FOLLOW_UP.search(question)))
+
+
+def standalone_question(question, history, provider, model):
+    conversation = "\n".join(f"Q: {t['question']}\nA: {t['answer']}" for t in history)
+    text = str(ask_json(REWRITE_PROMPT.format(conversation=conversation, question=question), REWRITE_SCHEMA,
+                        provider, model).get("question") or "").strip()
+    return text[:MAX_QUESTION] or question
 
 
 def clean_query(text):
@@ -304,24 +366,29 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
             raise ValueError("Ask a question or make a request first")
         if len(question) > MAX_QUESTION:
             raise ValueError(f"Request is longer than {MAX_QUESTION} characters")
+        history = clean_history(request.get("history"))
         target = router.route(question)
         if target.skill == "combo":  # notes first, then YouTube: validate both halves now
-            inner = SKILLS["rag"].validate({**clean, "question": target.question})
             shorts = SKILLS["shorts"].validate({**clean, **target.options, "question": "(from the answer)"})
-            return {**clean, "question": question,
+            follow_up = bool(target.options.get("follow_up"))
+            if follow_up and not history:
+                raise ValueError('About what? Ask a question first, or say what to look for ("find shorts about pizza")')
+            inner = None if follow_up else SKILLS["rag"].validate({**clean, "question": target.question, "history": history})
+            return {**clean, "question": question, "history": history,
                     "route": {"skill": "combo", "reason": target.reason, "title": "Notes → YouTube Shorts",
-                              "request": inner, "shorts": shorts}}
+                              "request": inner, "shorts": shorts, "follow_up": follow_up}}
         if target.skill == "shorts" and not target.question:
             raise ValueError("What should I look for on YouTube? e.g. \"find shorts about cooking\" or \"@MrBeast\"")
         skill = SKILLS[target.skill]
-        inner = skill.validate({**clean, **target.options, "question": target.question})  # rejects bad input up front
+        inner = skill.validate({**clean, **target.options, "question": target.question, "history": history})  # rejects bad input up front
         return {**clean, "question": question,
                 "route": {"skill": target.skill, "reason": target.reason, "title": skill.title, "request": inner}}
 
     def stages(self, request):
         target = request["route"]
         if target["skill"] == "combo":
-            return [{"id": "route", "title": "Understand request"}, *SKILLS["rag"].stages(target["request"]),
+            notes = SKILLS["rag"].stages(target["request"]) if target["request"] else []
+            return [{"id": "route", "title": "Understand request"}, *notes,
                     {"id": "query", "title": "Answer → Shorts search"}, *SKILLS["shorts"].stages(target["shorts"])]
         return [{"id": "route", "title": "Understand request"}, *SKILLS[target["skill"]].stages(target["request"])]
 
@@ -333,18 +400,21 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
         run.emit("stage_end", stage="route", status="ok", seconds=0)
         if target["skill"] != "combo":
             return SKILLS[target["skill"]].run(target["request"], run)
-        rag_request = target["request"]
-        SKILLS["rag"].run(rag_request, run)  # 1. answer from the notes (shown and cited as usual)
+        if target.get("follow_up"):  # "find shorts about it": the previous answer in this conversation
+            last = request["history"][-1]
+            asked, claims = f"{last['question']} — {request['question']}", [last["answer"]]
+        else:
+            SKILLS["rag"].run(target["request"], run)  # 1. answer from the notes (shown and cited as usual)
+            asked = request["question"]
+            claims = [c["text"] for c in json.loads(rag.ANSWER.read_text(encoding="utf-8"))["answer"]["claims"]]
         run.emit("stage_start", stage="query", title="Answer → Shorts search")  # 2. what to look for, from that answer
         started = time.time()
-        claims = [c["text"] for c in json.loads(rag.ANSWER.read_text(encoding="utf-8"))["answer"]["claims"]]
-        provider = rag_request["provider"]
-        model = rag_request["model"] or rag.DEFAULT_MODELS[provider]
+        provider = request["provider"]
+        model = request["model"] or rag.DEFAULT_MODELS[provider]
         try:
             if not claims:  # the notes didn't answer: nothing to search for
                 raise LookupError("no answer")
-            query = search_query(request["question"], claims, provider, model,
-                                 rag.find_anthropic_key()[0] if provider == "anthropic" else None)
+            query = search_query(asked, claims, provider, model)
             run.emit("log", stage="query", line=f"{provider} · {model} → “{query}”")
         except LookupError:
             query = ""

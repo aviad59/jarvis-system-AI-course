@@ -15,7 +15,7 @@ const els = {
   engine: $("stt-engine"),
   autoscroll: $("autoscroll"), toast: $("toast"), boot: $("boot"), bootLines: $("boot-lines"),
 };
-const state = { skills: [], skill: null, runId: null, source: null, card: null, stageStart: {}, live: false,
+const state = { conversation: [], skills: [], skill: null, runId: null, source: null, card: null, stageStart: {}, live: false,
                 lastAnswer: null, ended: true, recorder: null, recognizer: null, audio: null };
 
 /* ---------------- utilities ---------------- */
@@ -216,7 +216,7 @@ async function submit(event) {
   try {
     const { run_id } = await api("/api/runs", {
       method: "POST", headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ skill: state.skill.name, request: { question, ...readOptions() } }),
+      body: JSON.stringify({ skill: state.skill.name, request: { question, ...readOptions(), history: state.conversation } }),
     });
     els.question.value = "";
     autosize();
@@ -247,6 +247,8 @@ async function cancelRun() {
 const HANDLERS = {
   run_start(e) {
     els.intro?.remove();
+    closeTheater();
+    state.asked = e.request.question || "";
     if (e.request.question) els.feed.append(el("div", { class: "msg-user", dir: "auto" }, el("span", { class: "who", text: "YOU" }), e.request.question));
     state.card = el("div", { class: "msg-ai" }, el("span", { class: "who", text: "JARVIS" }),
       el("div", { class: "pending" }, el("i"), el("i"), el("i"), el("span", { text: "Working on it" })));
@@ -335,32 +337,18 @@ const HANDLERS = {
     const head = el("p", { class: "claim", dir: "auto", text: e.posts.length
       ? `${what} (MCP tool: ${e.tool})` : `No Shorts found for “${e.query}”.` });
     if (!posts.length) { fillCard(head); say(head.textContent); return; }
-    // The video plays inside the console (YouTube embed), never as a link out.
-    const player = el("div", { class: "player" });
-    const caption = el("div", { class: "player-caption", dir: "auto" });
-    const show = (p, autoplay) => {
-      player.replaceChildren(autoplay
-        ? el("iframe", { src: `https://www.youtube-nocookie.com/embed/${videoId(p)}?autoplay=1&playsinline=1&rel=0`,
-            title: p.title || "YouTube Short", allow: "autoplay; encrypted-media; picture-in-picture; fullscreen",
-            allowfullscreen: "", referrerpolicy: "strict-origin-when-cross-origin" })
-        : el("button", { type: "button", class: "poster", title: "Play", onclick: () => show(p, true) },
-            p.thumbnail ? el("img", { src: p.thumbnail, alt: "" }) : null, el("span", { class: "play-icon", text: "▶" })));
-      caption.replaceChildren(el("b", { text: p.title || "" }), el("div", { class: "post-meta" }, ...[p.uploader,
-        num(p.views) && `${num(p.views)} views`, num(p.likes) && `${num(p.likes)} likes`,
-        num(p.comments) && `${num(p.comments)} comments`, date(p.upload_date)].filter(Boolean).map((t) => el("span", { text: t }))));
-      for (const item of list.children) item.classList.toggle("current", item.dataset.id === videoId(p));
-    };
-    const list = el("ul", { class: "posts" }, posts.map((p) => el("li", { "data-id": videoId(p) },
-      el("button", { type: "button", class: "post", title: p.title || "", onclick: () => { stopSpeaking(); show(p, true); } },
-        p.thumbnail ? el("img", { src: p.thumbnail, alt: "", loading: "lazy" }) : null,
-        el("span", { dir: "auto", text: p.title || videoId(p) })))));
-    show(posts[0], false);
-    fillCard(head, el("div", { class: "shorts" }, el("div", { class: "stage-col" }, player, caption), posts.length > 1 ? list : null));
+    // Thumbnails in the card; the video itself plays big in the theater (never a link out).
+    const gallery = el("div", { class: "gallery" }, posts.map((p, i) => el("button", { type: "button", class: "thumb",
+      title: p.title || "", onclick: () => { stopSpeaking(); openTheater(posts, i, true); } },
+      el("span", { class: "thumb-img" }, p.thumbnail ? el("img", { src: p.thumbnail, alt: "", loading: "lazy" }) : null,
+        el("span", { class: "play-icon", text: "▶" })),
+      el("span", { class: "thumb-title", dir: "auto", text: p.title || videoId(p) }))));
+    fillCard(head, gallery);
     const title = posts[0].title ? `: ${posts[0].title}` : "";
     say(single ? (hebrew ? `הנה הסרטון${title}.` : `Here's the video${title}.`)
       : hebrew ? `מצאתי ${e.posts.length} שורטס ${channel ? "אחרונים מ" : "על "}${e.query}. הנה הראשון${title}.`
       : `I found ${e.posts.length} ${channel ? "latest Shorts from" : "Shorts for"} ${e.query}. Here's the first one${title}.`);
-    state.pendingVideo = () => show(posts[0], true);   // played after the spoken answer (run_end)
+    state.pendingVideo = () => openTheater(posts, 0, true);   // played after the spoken answer (run_end)
   },
   status(e) { renderSystems(e.systems); },
   error(e) {
@@ -381,6 +369,8 @@ const HANDLERS = {
     const live = state.live;
     state.live = false;
     loadHistory();
+    if (live && e.status === "done" && state.asked && state.lastAnswer)   // remembered for the next question (last 6 turns)
+      state.conversation = [...state.conversation, { question: state.asked, answer: state.lastAnswer }].slice(-6);
     if (!live) return setState("idle");
     if (e.status === "error") { setState("error"); setTimeout(() => els.body.dataset.state === "error" && setState("idle"), 6000); return; }
     const video = e.status === "done" ? state.pendingVideo : null;   // Shorts: speak the answer first, then play the video
@@ -412,6 +402,38 @@ function handle(event) {
 function say(text) {   // what is read aloud at the end of the run; a combined run says the answer, then the Shorts line
   state.lastAnswer = [state.lastAnswer, text].filter(Boolean).join(" ");
 }
+/* Theater: the Short plays large over the center column; the other results are a side list. Esc or ✕ closes it. */
+function closeTheater() { document.querySelector(".theater")?.remove(); }
+function openTheater(posts, start, autoplay) {
+  closeTheater();
+  const num = (n) => (n == null ? null : Intl.NumberFormat("en", { notation: "compact" }).format(n));
+  const date = (d) => (d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null);
+  const player = el("div", { class: "player" });
+  const caption = el("div", { class: "player-caption", dir: "auto" });
+  const list = el("ul", { class: "posts" });
+  const show = (p, play) => {
+    player.replaceChildren(play
+      ? el("iframe", { src: `https://www.youtube-nocookie.com/embed/${videoId(p)}?autoplay=1&playsinline=1&rel=0`,
+          title: p.title || "YouTube Short", allow: "autoplay; encrypted-media; picture-in-picture; fullscreen",
+          allowfullscreen: "", referrerpolicy: "strict-origin-when-cross-origin" })
+      : el("button", { type: "button", class: "poster", title: "Play", onclick: () => show(p, true) },
+          p.thumbnail ? el("img", { src: p.thumbnail, alt: "" }) : null, el("span", { class: "play-icon", text: "▶" })));
+    caption.replaceChildren(el("b", { text: p.title || "" }), el("div", { class: "post-meta" }, ...[p.uploader,
+      num(p.views) && `${num(p.views)} views`, num(p.likes) && `${num(p.likes)} likes`,
+      num(p.comments) && `${num(p.comments)} comments`, date(p.upload_date)].filter(Boolean).map((t) => el("span", { text: t }))));
+    for (const item of list.children) item.classList.toggle("current", item.dataset.id === videoId(p));
+  };
+  list.append(...posts.map((p) => el("li", { "data-id": videoId(p) },
+    el("button", { type: "button", class: "post", title: p.title || "", onclick: () => { stopSpeaking(); show(p, true); } },
+      p.thumbnail ? el("img", { src: p.thumbnail, alt: "", loading: "lazy" }) : null,
+      el("span", { dir: "auto", text: p.title || videoId(p) })))));
+  const box = el("div", { class: "theater", role: "dialog", "aria-label": "YouTube Short" },
+    el("button", { type: "button", class: "theater-close", title: "Close (Esc)", onclick: closeTheater, text: "✕" }),
+    el("div", { class: "theater-main" }, player, caption), posts.length > 1 ? list : null);
+  document.querySelector(".center").append(box);
+  show(posts[start], autoplay);
+}
+document.addEventListener("keydown", (e) => { if (e.key === "Escape") closeTheater(); });
 function videoId(post) {   // YouTube video ID from the MCP result (id, or the /shorts/ or ?v= URL)
   if (/^[\w-]{11}$/.test(post.id || "")) return post.id;
   const match = /(?:shorts\/|[?&]v=|youtu\.be\/)([\w-]{11})/.exec(post.url || "");

@@ -72,6 +72,13 @@ Anything not clearly about YouTube or the system goes to the documents, so a que
 notes that mentions YouTube (`who owns the youtube channel project?`) is answered from the notes.
 Words such as "videos" alone need a verb (`show me cat videos`); add `/shorts` when in doubt.
 
+**Conversation:** the console sends the last 6 questions and answers of this page with each request, so
+follow-ups work. A follow-up such as `והראל?` or `what about Harel?` is first rewritten into a full question
+(*Understand follow-up* stage: `מה הראל אוהב לאכול?`) so retrieval finds the right note, and the answer model
+also sees the earlier turns (as context only: facts still come from the cited notes). `find shorts about it` /
+`תמצא לי שורטס על זה` right after an answer searches YouTube from that answer, without a new notes search.
+Reloading the page starts a new conversation.
+
 **Notes → Shorts** (RAG + MCP): a YouTube request that points at the notes ("about it", "על זה", or names the
 team, a meeting, a project) runs both. First the notes answer (with citations, as usual). Then the same model
 (Ollama or Claude) turns *the answer* into a short search query, and the youtube-shorts MCP tool runs it. If the
@@ -114,9 +121,10 @@ browser as it is synthesized, so playback starts in about 1–2 s; a replayed an
 **This needs internet, and the spoken text is sent to Microsoft's speech service.** Set
 `JARVIS_TTS_ENGINE=local` to keep speech fully on this computer.
 
-YouTube Shorts: results play inside the console (an embedded YouTube player, no links out). With *Voice
-replies* on, Jarvis first says what it found, then starts the first Short; click another one in the list to
-switch. Replayed runs show the player paused.
+YouTube Shorts: results play inside the console (an embedded YouTube player, no links out). The answer card
+shows thumbnails; the Short plays large over the center column, with the other results beside it (✕ or Esc
+closes it, a thumbnail reopens it). With *Voice replies* on, Jarvis first says what it found, then opens the
+first Short.
 
 While Jarvis speaks, the core (the circle at the top) talks: the nucleus and a ring of voice bars move with
 the actual sound of the voice.
