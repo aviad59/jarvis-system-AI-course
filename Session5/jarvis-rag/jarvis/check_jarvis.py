@@ -224,6 +224,24 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual([s["id"] for s in events[0]["stages"]], ["route", "query", "mcp"])  # no new notes search
         self.assertEqual(calls, ["pizza"])  # searched from the previous answer
 
+    def test_youtube_topic_from_the_notes_asks_the_notes_first(self):  # "find shorts about Idan", Idan is in a note
+        import rag
+        with tempfile.TemporaryDirectory() as folder:
+            vault = Path(folder)
+            (vault / "Team").mkdir()
+            (vault / "Team" / "food.md").write_text("# אוכל\n\nעידן עף על פיצות.\n", encoding="utf-8")
+            saved_vault, rag.VAULT = rag.VAULT, vault
+            try:
+                route = skills.SKILLS["jarvis"].validate({"question": "תמצא לי שורטס על עידן"})["route"]
+                self.assertEqual((route["skill"], route["request"]["question"], route["fallback"]),
+                                 ("combo", "מה כתוב בפתקים על עידן?", "עידן"))
+                self.assertEqual(skills.SKILLS["jarvis"].validate({"question": "תמצא לי שורטס על ולעידן"})["route"]["skill"],
+                                 "combo")  # Hebrew prefix letters
+                for text in ("find shorts about cooking", "/shorts עידן"):  # not in the notes / forced YouTube only
+                    self.assertEqual(skills.SKILLS["jarvis"].validate({"question": text})["route"]["skill"], "shorts", text)
+            finally:
+                rag.VAULT = saved_vault
+
     def test_vault_scope_defaults_to_whole_vault(self):  # a note in any folder, a new one too, is indexed
         support = sys.modules.get("index_support") or __import__("index_support")
         with tempfile.TemporaryDirectory() as folder:

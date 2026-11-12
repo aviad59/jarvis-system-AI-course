@@ -84,6 +84,9 @@ team, a meeting, a project) runs both. First the notes answer (with citations, a
 (Ollama or Claude) turns *the answer* into a short search query, and the youtube-shorts MCP tool runs it. If the
 query model fails, the answer's own words are searched; if the notes have no answer, nothing is searched.
 Jarvis reads the answer aloud, says what it found, then plays the first Short.
+A Shorts request whose topic appears in your notes (`תמצא לי שורטס על עידן`, where Idan is in a note) also
+goes to the notes first ("what do the notes say about Idan?") and searches YouTube with that answer; if the
+notes say nothing, the topic is searched as asked. `/shorts עידן` skips the notes.
 
 Voice: click the mic (or Ctrl+Space) and speak. The question runs automatically when you
 pause, and the answer is read aloud the moment it arrives when *Voice replies* is on (no Speak click). If the recognizer isn't

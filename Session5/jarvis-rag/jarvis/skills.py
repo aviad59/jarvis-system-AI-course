@@ -347,6 +347,45 @@ def fallback_query(claims):  # no model reply: the first claim, cut to a search-
     return " ".join(clean_query(claims[0]).rstrip(".").split()[:8]) if claims else ""
 
 
+# Does a YouTube topic name something from the notes ("find shorts about Idan")? Then the notes answer first.
+HEBREW_PREFIXES = "והבכלמש"  # "ועידן", "לעידן", "שעידן" -> "עידן"
+COMMON = {"the", "and", "for", "with", "about", "this", "that", "what", "how", "who", "של", "על", "עם", "את", "זה",
+          "מה", "מי", "איך", "לי", "גם", "או", "אם", "כל", "יש", "אין", "הוא", "היא", "הם", "אני", "אתה", "שלי"}
+_vault_words = {"snapshot": None, "words": set()}
+
+
+def _forms(word):  # a word and its forms without up to two Hebrew prefix letters ("ולעידן" -> "לעידן", "עידן")
+    word = word.lower()
+    forms = {word}
+    for cut in (1, 2):
+        if len(word) - cut >= 3 and all(c in HEBREW_PREFIXES for c in word[:cut]):
+            forms.add(word[cut:])
+    return forms
+
+
+def vault_words():  # every word in the notes, cached until a note changes
+    support = rag._vault_support()
+    snapshot = support.vault_snapshot(rag.VAULT)
+    if snapshot is None:
+        return set()
+    if snapshot != _vault_words["snapshot"]:
+        files, _ = support.vault_files(rag.VAULT)
+        words = set()
+        for doc in support._read_vault(rag.VAULT, files, quiet=True):
+            for word in re.findall(r"\w{2,}", f"{doc.get('title', '')} {doc.get('body', '')} {doc.get('path', '')}"):
+                words |= _forms(word)
+        _vault_words.update(snapshot=snapshot, words=words - COMMON)
+    return _vault_words["words"]
+
+
+def vault_mentions(topic):  # the topic's words that also appear in the notes
+    try:
+        known = vault_words()
+    except Exception:  # vault missing or unreadable: plain YouTube search
+        return []
+    return [w for w in re.findall(r"\w{2,}", topic) if w.lower() not in COMMON and _forms(w) & known]
+
+
 class JarvisSkill(Skill):  # one input for everything: router.py picks the skill, then that skill runs as usual
     name, title = "jarvis", "Ask Jarvis"
     description = ("Ask anything: questions go to your documents, YouTube requests (\"find shorts about cooking\", "
@@ -368,6 +407,13 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
             raise ValueError(f"Request is longer than {MAX_QUESTION} characters")
         history = clean_history(request.get("history"))
         target = router.route(question)
+        mentioned = (vault_mentions(target.question) if target.skill == "shorts" and target.options.get("mode") == "search"
+                     and not target.reason.startswith("/") else [])  # /shorts always means YouTube only
+        if mentioned:  # "find shorts about Idan": Idan is in the notes -> what do the notes say about him, then YouTube
+            words = " ".join(mentioned)
+            asked = f"מה כתוב בפתקים על {target.question}?" if re.search(r"[֐-׿]", target.question)                 else f"What do the notes say about {target.question}?"
+            target = router.Route("combo", asked, {**target.options, "fallback": target.question},
+                                  f"“{words}” is in your notes → answer from the notes, then search Shorts about the answer")
         if target.skill == "combo":  # notes first, then YouTube: validate both halves now
             shorts = SKILLS["shorts"].validate({**clean, **target.options, "question": "(from the answer)"})
             follow_up = bool(target.options.get("follow_up"))
@@ -376,7 +422,8 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
             inner = None if follow_up else SKILLS["rag"].validate({**clean, "question": target.question, "history": history})
             return {**clean, "question": question, "history": history,
                     "route": {"skill": "combo", "reason": target.reason, "title": "Notes → YouTube Shorts",
-                              "request": inner, "shorts": shorts, "follow_up": follow_up}}
+                              "request": inner, "shorts": shorts, "follow_up": follow_up,
+                              "fallback": target.options.get("fallback")}}
         if target.skill == "shorts" and not target.question:
             raise ValueError("What should I look for on YouTube? e.g. \"find shorts about cooking\" or \"@MrBeast\"")
         skill = SKILLS[target.skill]
@@ -412,12 +459,16 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
         provider = request["provider"]
         model = request["model"] or rag.DEFAULT_MODELS[provider]
         try:
+            if not claims and target.get("fallback"):  # the notes say nothing about it: search the topic as asked
+                raise LookupError(target["fallback"])
             if not claims:  # the notes didn't answer: nothing to search for
-                raise LookupError("no answer")
+                raise LookupError("")
             query = search_query(asked, claims, provider, model)
             run.emit("log", stage="query", line=f"{provider} · {model} → “{query}”")
-        except LookupError:
-            query = ""
+        except LookupError as nothing:
+            query = nothing.args[0] if nothing.args else ""
+            if query:
+                run.emit("log", stage="query", line=f"the notes say nothing about it: searching “{query}” as asked")
         except Exception as error:  # the search still runs, on the answer's own words
             query = fallback_query(claims)
             run.emit("log", stage="query", line=f"query model failed ({type(error).__name__}), using the answer: “{query}”")
