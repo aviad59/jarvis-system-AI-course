@@ -326,19 +326,40 @@ const HANDLERS = {
   posts(e) {   // YouTube Shorts from the youtube-shorts MCP server
     const num = (n) => (n == null ? null : Intl.NumberFormat("en", { notation: "compact" }).format(n));
     const date = (d) => (d ? `${d.slice(0, 4)}-${d.slice(4, 6)}-${d.slice(6, 8)}` : null);
-    const items = e.posts.map((p) => el("li", { class: "post" },
-      p.thumbnail ? el("img", { src: p.thumbnail, alt: "", loading: "lazy" }) : null,
-      el("div", {},
-        el("a", { href: p.url, target: "_blank", rel: "noopener", dir: "auto", text: p.title || p.url }),
-        el("div", { class: "post-meta" }, ...[p.uploader, num(p.views) && `${num(p.views)} views`,
-          num(p.likes) && `${num(p.likes)} likes`, num(p.comments) && `${num(p.comments)} comments`, date(p.upload_date)]
-          .filter(Boolean).map((t) => el("span", { text: t }))))));
-    const what = e.tool === "get_post_details" ? "Details of the video" : e.tool === "get_youtube_shorts"
+    const posts = e.posts.filter((p) => videoId(p));
+    const hebrew = hasHebrew(e.query);
+    const single = e.tool === "get_post_details", channel = e.tool === "get_youtube_shorts";
+    const what = single ? "Details of the video" : channel
       ? `${e.posts.length} latest Shorts from ${e.query}` : `${e.posts.length} Shorts for “${e.query}”`;
     const head = el("p", { class: "claim", dir: "auto", text: e.posts.length
       ? `${what} (MCP tool: ${e.tool})` : `No Shorts found for “${e.query}”.` });
-    fillCard(head, items.length ? el("ul", { class: "posts" }, items) : null);
-    state.lastAnswer = head.textContent;
+    if (!posts.length) { fillCard(head); state.lastAnswer = head.textContent; return; }
+    // The video plays inside the console (YouTube embed), never as a link out.
+    const player = el("div", { class: "player" });
+    const caption = el("div", { class: "player-caption", dir: "auto" });
+    const show = (p, autoplay) => {
+      player.replaceChildren(autoplay
+        ? el("iframe", { src: `https://www.youtube-nocookie.com/embed/${videoId(p)}?autoplay=1&playsinline=1&rel=0`,
+            title: p.title || "YouTube Short", allow: "autoplay; encrypted-media; picture-in-picture; fullscreen",
+            allowfullscreen: "", referrerpolicy: "strict-origin-when-cross-origin" })
+        : el("button", { type: "button", class: "poster", title: "Play", onclick: () => show(p, true) },
+            p.thumbnail ? el("img", { src: p.thumbnail, alt: "" }) : null, el("span", { class: "play-icon", text: "▶" })));
+      caption.replaceChildren(el("b", { text: p.title || "" }), el("div", { class: "post-meta" }, ...[p.uploader,
+        num(p.views) && `${num(p.views)} views`, num(p.likes) && `${num(p.likes)} likes`,
+        num(p.comments) && `${num(p.comments)} comments`, date(p.upload_date)].filter(Boolean).map((t) => el("span", { text: t }))));
+      for (const item of list.children) item.classList.toggle("current", item.dataset.id === videoId(p));
+    };
+    const list = el("ul", { class: "posts" }, posts.map((p) => el("li", { "data-id": videoId(p) },
+      el("button", { type: "button", class: "post", title: p.title || "", onclick: () => { stopSpeaking(); show(p, true); } },
+        p.thumbnail ? el("img", { src: p.thumbnail, alt: "", loading: "lazy" }) : null,
+        el("span", { dir: "auto", text: p.title || videoId(p) })))));
+    show(posts[0], false);
+    fillCard(head, el("div", { class: "shorts" }, el("div", { class: "stage-col" }, player, caption), posts.length > 1 ? list : null));
+    const title = posts[0].title ? `: ${posts[0].title}` : "";
+    state.lastAnswer = single ? (hebrew ? `הנה הסרטון${title}.` : `Here's the video${title}.`)
+      : hebrew ? `מצאתי ${e.posts.length} שורטס ${channel ? "אחרונים מ" : "על "}${e.query}. הנה הראשון${title}.`
+      : `I found ${e.posts.length} ${channel ? "latest Shorts from" : "Shorts for"} ${e.query}. Here's the first one${title}.`;
+    state.pendingVideo = () => show(posts[0], true);   // played after the spoken answer (run_end)
   },
   status(e) { renderSystems(e.systems); },
   error(e) {
@@ -360,15 +381,27 @@ const HANDLERS = {
     loadHistory();
     if (!live) return setState("idle");
     if (e.status === "error") { setState("error"); setTimeout(() => els.body.dataset.state === "error" && setState("idle"), 6000); return; }
-    if (e.status === "done" && els.speak.checked && state.lastAnswer) speak(state.lastAnswer);
-    else setState("idle");
+    const video = e.status === "done" ? state.pendingVideo : null;   // Shorts: speak the answer first, then play the video
+    state.pendingVideo = null;
+    if (e.status === "done" && els.speak.checked && state.lastAnswer) {
+      const run = state.runId;
+      speak(state.lastAnswer).then(() => { if (video && state.runId === run) video(); });
+    } else {
+      setState("idle");
+      video?.();
+    }
   },
 };
 function handle(event) {
   const handler = HANDLERS[event.type];
   if (handler) handler(event);
-  if (event.type === "run_start") state.lastAnswer = null;
+  if (event.type === "run_start") { state.lastAnswer = null; state.pendingVideo = null; }
   else if (!state.live) state.ended = true;
+}
+function videoId(post) {   // YouTube video ID from the MCP result (id, or the /shorts/ or ?v= URL)
+  if (/^[\w-]{11}$/.test(post.id || "")) return post.id;
+  const match = /(?:shorts\/|[?&]v=|youtu\.be\/)([\w-]{11})/.exec(post.url || "");
+  return match ? match[1] : null;
 }
 function fillCard(...nodes) {
   if (!state.card) return;
@@ -493,7 +526,7 @@ async function speak(text) {
   const token = speechToken;
   const lang = hasHebrew(text) ? "he" : "en";
   if (await speakStreamed(text, lang, token)) return;
-  if (token !== speechToken) return;
+  if (token !== speechToken) return;   // resolves when the speech ends or is stopped
   // Local fallback: Hebrew always goes to MMS-TTS (browsers rarely ship a Hebrew voice); English only when the browser has none.
   if (lang === "he" || !browserVoice("en").length) {
     const parts = speechChunks(text);
@@ -523,12 +556,13 @@ async function speak(text) {
         return toast("Local Hebrew voice failed and the browser has no Hebrew voice: " + error.message);
     }
   }
-  speakInBrowser(text, lang);
+  await speakInBrowser(text, lang);
 }
-function speakInBrowser(text, lang) {
+function speakInBrowser(text, lang) {   // resolves when the utterance ends
   const synth = window.speechSynthesis;
   if (!synth) return setState("idle");
   if (!browserVoice(lang).length && lang === "he") { setState("idle"); return toast("This browser has no Hebrew voice."); }
+  return new Promise((resolve) => {
   const utterance = new SpeechSynthesisUtterance(text.slice(0, 1200));
   const voices = browserVoice(lang);
   const preferred = lang === "en" ? voices.find((v) => /UK English Male|Daniel|George|Ryan/i.test(v.name)) : null;
@@ -536,9 +570,10 @@ function speakInBrowser(text, lang) {
   utterance.lang = utterance.voice?.lang || (lang === "he" ? "he-IL" : "en-GB");
   utterance.rate = 1.02;
   utterance.onstart = () => setState("speaking");
-  utterance.onend = utterance.onerror = () => { if (els.body.dataset.state === "speaking") setState("idle"); };
+  utterance.onend = utterance.onerror = () => { if (els.body.dataset.state === "speaking") setState("idle"); resolve(); };
   synth.cancel();
   synth.speak(utterance);
+  });
 }
 
 /* ---------------- voice in: record -> local Whisper ---------------- */

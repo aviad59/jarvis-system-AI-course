@@ -107,6 +107,10 @@ browser as it is synthesized, so playback starts in about 1–2 s; a replayed an
 **This needs internet, and the spoken text is sent to Microsoft's speech service.** Set
 `JARVIS_TTS_ENGINE=local` to keep speech fully on this computer.
 
+YouTube Shorts: results play inside the console (an embedded YouTube player, no links out). With *Voice
+replies* on, Jarvis first says what it found, then starts the first Short; click another one in the list to
+switch. Replayed runs show the player paused.
+
 Offline fallback: if the service can't be reached, Jarvis switches automatically to Meta's MMS-TTS running
 locally on the CPU (`facebook/mms-tts-heb` / `mms-tts-eng`, preloaded in the background at start), and tries
 the neural voice again after a minute. Numbers are spelled out in Hebrew for MMS, since it only reads letters.
