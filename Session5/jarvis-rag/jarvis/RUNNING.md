@@ -134,7 +134,7 @@ their scores, and **System log** shows the raw output. Click **Abort** to stop a
 ## 7. Read the answer
 
 The answer appears in the center as claims with citation chips. Click a chip to see the
-exact source chunk it came from. If **Voice replies** is on, the answer is read aloud.
+exact source chunk it came from. If **Voice replies** is on, the answer is read aloud as soon as it arrives; if the browser holds the sound, it plays on your next click or key press.
 
 ![Answer with citations](docs/img/06-answer.jpg)
 

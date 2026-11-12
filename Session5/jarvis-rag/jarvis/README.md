@@ -79,7 +79,7 @@ query model fails, the answer's own words are searched; if the notes have no ans
 Jarvis reads the answer aloud, says what it found, then plays the first Short.
 
 Voice: click the mic (or Ctrl+Space) and speak. The question runs automatically when you
-pause, and the answer is read aloud when *Voice replies* is on. If the recognizer isn't
+pause, and the answer is read aloud the moment it arrives when *Voice replies* is on (no Speak click). If the recognizer isn't
 confident about what it heard, the text is left in the box for you to check and send with
 Enter instead of running the wrong question. *Recognition* picks the engine:
 
