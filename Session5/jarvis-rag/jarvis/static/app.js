@@ -262,7 +262,7 @@ const HANDLERS = {
     const node = $("stage-" + e.stage);
     node?.classList.add("active");
     state.stageStart[e.stage] = e.time;
-    if (state.live) setState("thinking", e.title);
+    if (state.live) { setState("thinking", e.title); working(e.title); }
     logLine(`▸ ${e.title}`, "l-stage");
   },
   log(e) { logLine(e.line, /STOP|ERROR|Traceback|failed/i.test(e.line) ? "l-err" : ""); },
@@ -375,6 +375,7 @@ const HANDLERS = {
     els.cancel.hidden = true;
     els.send.disabled = false;
     for (const node of els.stages.querySelectorAll(".stage.active")) node.classList.replace("active", "cancelled");
+    state.card?.querySelector(".pending")?.remove();
     if (e.status === "cancelled") { fillCard(el("p", { class: "claim", text: "Run aborted." })); }
     logLine(`■ ${e.status.toUpperCase()} in ${fmtSeconds(e.seconds)}`, e.status === "done" ? "l-ok" : "l-err");
     const live = state.live;
@@ -406,6 +407,16 @@ function videoId(post) {   // YouTube video ID from the MCP result (id, or the /
   if (/^[\w-]{11}$/.test(post.id || "")) return post.id;
   const match = /(?:shorts\/|[?&]v=|youtu\.be\/)([\w-]{11})/.exec(post.url || "");
   return match ? match[1] : null;
+}
+function working(title) {   // the card shows Jarvis is still busy, also after a first result (notes answer -> Shorts search)
+  if (!state.card || state.ended) return;
+  let pending = state.card.querySelector(".pending");
+  if (!pending) {
+    pending = el("div", { class: "pending" }, el("i"), el("i"), el("i"), el("span"));
+    state.card.append(pending);
+    scrollFeed();
+  }
+  pending.querySelector("span").textContent = state.card.childElementCount > 2 ? `Still working · ${title}` : title;
 }
 function fillCard(...nodes) {
   if (!state.card) return;
