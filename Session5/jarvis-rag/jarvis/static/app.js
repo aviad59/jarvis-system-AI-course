@@ -399,9 +399,14 @@ const SPOKEN = new Set(["answer", "message", "posts"]);   // events that carry t
 function handle(event) {
   const handler = HANDLERS[event.type];
   if (handler) handler(event);
-  if (event.type === "run_start") { state.lastAnswer = null; state.pendingVideo = null; state.reply = null; }
+  if (event.type === "run_start") { state.lastAnswer = null; state.pendingVideo = null; state.reply = null; state.spokenUpTo = 0; }
   // Speak the moment the answer exists, while the run is still wrapping up; never for replayed history.
-  if (SPOKEN.has(event.type) && state.live && els.speak.checked && state.lastAnswer) state.reply = speak(state.lastAnswer);
+  // A later part of the same reply (notes answer, then the Shorts line) is queued after it, never restarting it.
+  if (SPOKEN.has(event.type) && state.live && els.speak.checked && state.lastAnswer) {
+    const fresh = state.lastAnswer.slice(state.spokenUpTo || 0).trim(), run = state.runId;
+    state.spokenUpTo = state.lastAnswer.length;
+    if (fresh) state.reply = state.reply ? state.reply.then(() => (state.runId === run ? speak(fresh) : null)) : speak(fresh);
+  }
   else if (!state.live) state.ended = true;
 }
 function say(text) {   // what is read aloud at the end of the run; a combined run says the answer, then the Shorts line
