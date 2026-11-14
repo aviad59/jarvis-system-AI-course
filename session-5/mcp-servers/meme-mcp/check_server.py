@@ -1,4 +1,4 @@
-"""Tests for the memes MCP server's safety checks and Hebrew layout. Run: python meme-mcp/check_server.py
+"""Tests for the memes MCP server's safety checks and Hebrew layout. Run: python mcp-servers/meme-mcp/check_server.py
 
 No network: these test the input checks, the URL escaping and the right-to-left ordering directly.
 """

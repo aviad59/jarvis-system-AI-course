@@ -2,16 +2,16 @@
   "mcpServers": {
     "youtube-shorts": {
       "type": "stdio",
-      "command": "social-mcp/.venv/Scripts/python.exe",
+      "command": "mcp-servers/social-mcp/.venv/Scripts/python.exe",
       "args": [
-        "social-mcp/server.py"
+        "mcp-servers/social-mcp/server.py"
       ]
     },
     "memes": {
       "type": "stdio",
       "command": "python",
       "args": [
-        "meme-mcp/server.py"
+        "mcp-servers/meme-mcp/server.py"
       ]
     }
   }

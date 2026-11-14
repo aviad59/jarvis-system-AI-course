@@ -20,5 +20,5 @@ uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 
 ## Used by
 - **Claude Code**: `.mcp.json` in the repo root registers it as `youtube-shorts`. Approve it, then check with `/mcp`.
-- **Jarvis**: the **YouTube Shorts** skill (`Session5/jarvis-rag/jarvis/skills.py`) runs `jarvis_client.py`,
+- **Jarvis**: the **YouTube Shorts** skill (`session-5/jarvis-rag/jarvis/skills.py`) runs `jarvis_client.py`,
   which connects to `server.py` over MCP stdio and calls one tool.

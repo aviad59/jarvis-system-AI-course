@@ -7,7 +7,7 @@ starting point for a Jarvis-style assistant.
 
 Step-by-step guide with screenshots: [RUNNING.md](RUNNING.md).
 
-From the `Session5/jarvis-rag` folder, with the Ollama app running:
+From the `session-5/jarvis-rag` folder, with the Ollama app running:
 
 ```
 python -m pip install pymongo faster-whisper     # once

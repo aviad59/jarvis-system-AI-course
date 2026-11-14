@@ -214,7 +214,7 @@ class ShortsSkill(Skill):  # Jarvis as an MCP client: calls the free youtube-sho
     description = "Fetch public YouTube Shorts through the youtube-shorts MCP server (free, no login). " \
                   "Type a search query, or a channel like @MrBeast."
     needs_question = True
-    SOCIAL_MCP = Path(__file__).resolve().parents[3] / "social-mcp"  # repo root / social-mcp
+    SOCIAL_MCP = Path(__file__).resolve().parents[2] / "mcp-servers" / "social-mcp"  # session-5/mcp-servers/social-mcp
     options = [
         {"key": "mode", "label": "Find by", "type": "select", "choices": ["search", "channel", "url"], "default": "search"},
         {"key": "limit", "label": "Results", "type": "int", "default": 5, "min": 1, "max": 25},
@@ -481,7 +481,7 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
     description = ("Make a meme through the memes MCP server (open-source Memegen, free). Say what it's about, "
                    "or name a template and write the captions: \"drake meme: writing tests / shipping on friday\".")
     needs_question = True
-    MEME_MCP = Path(__file__).resolve().parents[3] / "meme-mcp"  # repo root / meme-mcp
+    MEME_MCP = Path(__file__).resolve().parents[2] / "mcp-servers" / "meme-mcp"  # session-5/mcp-servers/meme-mcp
     MEDIA = Path(__file__).resolve().parent / "data" / "media"  # locally drawn memes, served at /media/<name>
     options = [
         {"key": "template", "label": "Template", "type": "text", "default": "", "placeholder": "auto (e.g. drake)"},

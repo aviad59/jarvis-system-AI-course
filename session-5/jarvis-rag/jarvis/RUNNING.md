@@ -21,7 +21,7 @@ them in **MongoDB Atlas** (a cloud database) instead
 
 ## 2. One-time setup
 
-All commands run from the `Session5/jarvis-rag` folder.
+All commands run from the `session-5/jarvis-rag` folder.
 
 **Pull the two Ollama models** (downloads ~3.5 GB, do it before class):
 
@@ -60,7 +60,7 @@ ANTHROPIC_API_KEY=sk-ant-...
 
 ## 3. Start the server
 
-Terminal 1, from the `Session5/jarvis-rag` folder:
+Terminal 1, from the `session-5/jarvis-rag` folder:
 
 ```
 python jarvis/server.py
