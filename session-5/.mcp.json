@@ -1,0 +1,18 @@
+{
+  "mcpServers": {
+    "youtube-shorts": {
+      "type": "stdio",
+      "command": "mcp-servers/social-mcp/.venv/Scripts/python.exe",
+      "args": [
+        "mcp-servers/social-mcp/server.py"
+      ]
+    },
+    "memes": {
+      "type": "stdio",
+      "command": "python",
+      "args": [
+        "mcp-servers/meme-mcp/server.py"
+      ]
+    }
+  }
+}
