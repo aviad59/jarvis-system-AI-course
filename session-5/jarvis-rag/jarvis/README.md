@@ -49,7 +49,7 @@ The Systems panel shows the watcher's state.
 | Area | Shows |
 |---|---|
 | Systems | Ollama + models, MongoDB Atlas chunk count, Anthropic key, Obsidian vault, local index, Whisper, speech engine |
-| Protocols | Skills. *Ask Jarvis* (default) = one box for everything, see below; *Ask the documents* = the RAG pipeline; *YouTube Shorts* = the MCP tool; *System check* = health report |
+| Protocols | Left blank. The console always uses *Ask Jarvis* (one box for everything, see below) |
 | Core | The current state: standing by, listening, processing (with stage), responding |
 | Dialogue | Answers as claims with citation chips; click a chip to see the exact source chunk |
 | Pipeline telemetry | Each stage with live timer and status, retrieved evidence with scores, raw log |
