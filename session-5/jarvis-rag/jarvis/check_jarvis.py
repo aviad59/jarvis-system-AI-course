@@ -680,5 +680,194 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual(tts.english_number(2026), "two thousand twenty six")
 
 
+FAKE_MCP_SERVER = r'''
+# A tiny stdio MCP server (stdlib only) for the mcp_client tests: one JSON-RPC message per line.
+import json, os, sys, threading, time
+state = {"initialized": False, "cancelled": []}
+out = threading.Lock()
+TOOLS = [{"name": name, "description": f"Fake {name} tool.", "inputSchema": {"type": "object", "properties": {}}}
+         for name in ("echo", "fail", "sleep", "exit", "cancelled", "search_youtube_shorts")]
+TOOLS.append({"name": "wrapped", "description": "A list result, wrapped like fastmcp does.", "inputSchema": {"type": "object"},
+              "outputSchema": {"type": "object", "properties": {"result": {}}, "x-fastmcp-wrap-result": True}})
+
+def send(message):
+    with out:
+        sys.stdout.write(json.dumps(message) + "\n")
+        sys.stdout.flush()
+
+def data(request_id, value):
+    send({"jsonrpc": "2.0", "id": request_id,
+          "result": {"content": [{"type": "text", "text": json.dumps(value)}], "structuredContent": value}})
+
+def call(request_id, name, args):
+    print(f"fake: {name} called", file=sys.stderr, flush=True)
+    if name == "fail":
+        send({"jsonrpc": "2.0", "id": request_id,
+              "result": {"isError": True, "content": [{"type": "text", "text": "Error calling tool 'fail': boom"}]}})
+    elif name == "exit":
+        print("fake: crashing", file=sys.stderr, flush=True)
+        os._exit(3)
+    elif name == "sleep":
+        time.sleep(args.get("seconds", 5))
+        data(request_id, {"ok": True, "slept": True})
+    elif name == "cancelled":
+        data(request_id, {"ok": True, "ids": state["cancelled"]})
+    elif name == "wrapped":
+        data(request_id, {"result": [1, 2]})
+    elif name == "search_youtube_shorts":
+        data(request_id, {"ok": True, "count": 1, "posts": [{"title": f"{args['query']} short", "url": "https://youtube.com/shorts/x"}]})
+    else:
+        data(request_id, {"ok": True, "pid": os.getpid(), "arguments": args, "initialized": state["initialized"]})
+
+for line in sys.stdin:
+    message = json.loads(line)
+    method = message.get("method")
+    if method == "initialize":
+        print("fake: starting", file=sys.stderr, flush=True)
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"protocolVersion": message["params"]["protocolVersion"],
+              "capabilities": {"tools": {}}, "serverInfo": {"name": "fake", "version": "1"}}})
+    elif method == "notifications/initialized":
+        state["initialized"] = True
+    elif method == "notifications/cancelled":
+        state["cancelled"].append(message["params"]["requestId"])
+    elif method == "tools/list":
+        send({"jsonrpc": "2.0", "id": message["id"], "result": {"tools": TOOLS}})
+    elif method == "tools/call":
+        params = message["params"]
+        threading.Thread(target=call, args=(message["id"], params["name"], params.get("arguments") or {}), daemon=True).start()
+'''
+
+
+class McpClient(unittest.TestCase):  # mcp_client.py against the fake server above: real processes and pipes, no network
+    @classmethod
+    def setUpClass(cls):
+        import mcp_client
+        cls.mcp = mcp_client
+        cls.tmp = tempfile.TemporaryDirectory()
+        cls.root = Path(cls.tmp.name)
+        (cls.root / "fake").mkdir()
+        (cls.root / "fake" / "server.py").write_text(FAKE_MCP_SERVER, encoding="utf-8")
+        cls.spec = {"type": "stdio", "command": "python", "args": ["fake/server.py"]}  # relative to root, like .mcp.json
+
+    @classmethod
+    def tearDownClass(cls):
+        cls.tmp.cleanup()
+
+    def client(self, *names):
+        client = self.mcp.Client({name: self.spec for name in names or ("fake",)}, root=self.root)
+        self.addCleanup(client.close)
+        return client
+
+    def test_call_tool_and_list_tools(self):
+        client, lines = self.client(), []
+        self.assertEqual(client.servers(), ["fake"])
+        tools = client.list_tools("fake")
+        self.assertIn({"name": "echo", "description": "Fake echo tool.", "input_schema": {"type": "object", "properties": {}}}, tools)
+        self.assertEqual(set(tools[0]), {"name", "description", "input_schema"})
+        data = client.call_tool("fake", "echo", {"text": "שלום"}, log=lines.append)
+        self.assertEqual((data["arguments"], data["initialized"]), ({"text": "שלום"}, True))  # UTF-8 both ways; handshake done
+        self.assertEqual(client.call_tool("fake", "wrapped", {}), [1, 2])  # fastmcp's {"result": ...} is unwrapped
+        self.assertIn('MCP: call echo {"text": "שלום"}', lines)
+        deadline = time.time() + 5
+        while "fake: echo called" not in lines and time.time() < deadline:  # the server's stderr, forwarded
+            time.sleep(0.02)
+        self.assertIn("fake: echo called", lines)
+        with self.assertRaisesRegex(self.mcp.McpError, "^boom$"):  # the server's message, without fastmcp's prefix
+            client.call_tool("fake", "fail", {})
+        with self.assertRaisesRegex(self.mcp.McpError, "not offered"):
+            client.call_tool("fake", "nope", {})
+        with self.assertRaisesRegex(self.mcp.McpError, "Unknown MCP server"):
+            client.call_tool("other", "echo", {})
+
+    def test_one_process_serves_every_call(self):
+        client, lines = self.client(), []
+        first = client.call_tool("fake", "echo", {}, log=lines.append)["pid"]
+        second = client.call_tool("fake", "echo", {}, log=lines.append)["pid"]
+        client.list_tools("fake")
+        self.assertEqual(first, second)
+        self.assertEqual(sum(line.startswith("MCP: connected to fake") for line in lines), 1)
+        threads = [threading.Thread(target=lambda: client.call_tool("fake", "echo", {})) for _ in range(5)]
+        for t in threads:
+            t.start()
+        for t in threads:
+            t.join(10)
+        self.assertEqual(client.call_tool("fake", "echo", {})["pid"], first)  # thread-safe, still one process
+
+    def test_reconnects_after_the_server_dies(self):
+        client, lines = self.client(), []
+        first = client.call_tool("fake", "echo", {})["pid"]
+        client.connections["fake"].process.kill()  # died between calls
+        client.connections["fake"].process.wait(5)
+        second = client.call_tool("fake", "echo", {}, log=lines.append)["pid"]
+        self.assertNotEqual(first, second)
+        self.assertTrue(any("starting it again" in line for line in lines))
+        with self.assertRaisesRegex(self.mcp.McpError, "stopped during the call"):  # dies mid-call: one retry, then a clear error
+            client.call_tool("fake", "exit", {}, log=lines.append)
+        self.assertEqual(sum(line == "MCP: call exit {}" for line in lines), 2)
+        self.assertNotEqual(client.call_tool("fake", "echo", {})["pid"], second)  # and the next call works again
+
+    def test_timeout_restarts_a_stuck_server(self):
+        client = self.client()
+        first = client.call_tool("fake", "echo", {})["pid"]
+        started = time.time()
+        with self.assertRaisesRegex(self.mcp.McpError, r"didn't answer sleep within 0\.5 s"):
+            client.call_tool("fake", "sleep", {"seconds": 30}, timeout=0.5)
+        self.assertLess(time.time() - started, 5)
+        self.assertNotEqual(client.call_tool("fake", "echo", {})["pid"], first)
+
+    def test_cancel_stops_waiting_and_tells_the_server(self):
+        client, stop = self.client(), threading.Event()
+        first = client.call_tool("fake", "echo", {})["pid"]
+        threading.Timer(0.3, stop.set).start()
+        started = time.time()
+        with self.assertRaises(self.mcp.Cancelled):
+            client.call_tool("fake", "sleep", {"seconds": 30}, cancelled=stop.is_set)
+        self.assertLess(time.time() - started, 3)
+        self.assertEqual(len(client.call_tool("fake", "cancelled", {})["ids"]), 1)  # notifications/cancelled arrived
+        self.assertEqual(client.call_tool("fake", "echo", {})["pid"], first)  # the connection is kept
+
+    def test_server_that_cannot_start(self):
+        client = self.mcp.Client({"broken": {"command": "python", "args": ["fake/missing.py"]}}, root=self.root)
+        self.addCleanup(client.close)
+        with self.assertRaisesRegex(self.mcp.McpError, "The broken MCP server didn't start: .*missing"):
+            client.list_tools("broken")
+
+    def test_servers_come_from_mcp_json_with_their_venv(self):
+        self.assertEqual(self.mcp.servers(), ["youtube-shorts", "memes"])  # session-5/.mcp.json
+        argv, cwd, _ = self.mcp.resolve(self.spec, self.root)
+        self.assertEqual((argv, Path(cwd)), ([sys.executable, str(self.root / "fake" / "server.py")], self.root / "fake"))
+        venv = self.root / "fake" / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
+        venv.parent.mkdir(parents=True)
+        venv.write_text("")
+        try:
+            self.assertEqual(self.mcp.resolve(self.spec, self.root)[0][0], str(venv))  # the server's own venv first
+        finally:
+            venv.unlink()
+        config = self.root / ".mcp.json"
+        config.write_text(json.dumps({"mcpServers": {"b": self.spec, "a": self.spec, "web": {"type": "http", "url": "x"}}}))
+        self.assertEqual(self.mcp.Client(config).servers(), ["b", "a"])  # stdio servers, in file order
+
+    def test_skills_call_tools_over_the_shared_connection(self):  # ShortsSkill / MemeSkill -> mcp_client -> fake server
+        import runs
+        saved, self.mcp.DEFAULT = self.mcp.DEFAULT, self.client("youtube-shorts", "memes")
+        try:
+            request = skills.SKILLS["shorts"].validate({"question": "cats", "limit": 2})
+            run = runs.Run("shorts", request)
+            skills.SKILLS["shorts"].run(request, run)
+            posts = next(e for e in run.events if e["type"] == "posts")
+            self.assertEqual((posts["tool"], posts["posts"][0]["title"]), ("search_youtube_shorts", "cats short"))
+            logs = [e["line"] for e in run.events if e["type"] == "log" and e["stage"] == "mcp"]
+            self.assertIn('MCP: call search_youtube_shorts {"query": "cats", "limit": 2, "details": false}', logs)
+            self.assertEqual(next(e for e in run.events if e["type"] == "stage_end")["status"], "ok")
+            with self.assertRaisesRegex(RuntimeError, "^Memes MCP call failed — boom$"):
+                skills.SKILLS["meme"].call(run, "plan", "fail", {})
+            run = runs.Run("meme", {})
+            run.cancelled = True
+            with self.assertRaises(runs.Cancelled):
+                skills.SKILLS["meme"].call(run, "mcp", "sleep", {"seconds": 30})
+        finally:
+            self.mcp.DEFAULT = saved
+
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)

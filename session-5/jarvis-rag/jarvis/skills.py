@@ -15,10 +15,10 @@ Event types the console understands (add new ones in app.js -> handlers):
 To add a skill: subclass Skill, implement stages() and run(), and add an instance to SKILLS.
 """
 import json  # read pipeline output files
-import os  # platform check for venv paths
+import runs  # log line limit
 import sys  # Python executable for child processes
 import re  # tidy a search query
-import tempfile  # MCP tool result file
+import mcp_client  # one shared, long-lived connection per MCP server (.mcp.json)
 import urllib.request  # ask the answer model for a search query
 import time  # stage timing
 from pathlib import Path  # paths to the MCP server
@@ -214,7 +214,6 @@ class ShortsSkill(Skill):  # Jarvis as an MCP client: calls the free youtube-sho
     description = "Fetch public YouTube Shorts through the youtube-shorts MCP server (free, no login). " \
                   "Type a search query, or a channel like @MrBeast."
     needs_question = True
-    SOCIAL_MCP = Path(__file__).resolve().parents[2] / "mcp-servers" / "social-mcp"  # session-5/mcp-servers/social-mcp
     options = [
         {"key": "mode", "label": "Find by", "type": "select", "choices": ["search", "channel", "url"], "default": "search"},
         {"key": "limit", "label": "Results", "type": "int", "default": 5, "min": 1, "max": 25},
@@ -232,10 +231,6 @@ class ShortsSkill(Skill):  # Jarvis as an MCP client: calls the free youtube-sho
     def stages(self, request):
         return [{"id": "mcp", "title": "MCP · youtube-shorts"}]
 
-    def python(self):  # the MCP server's own venv (fastmcp + yt-dlp); Jarvis's Python needs neither
-        venv = self.SOCIAL_MCP / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        return str(venv) if venv.exists() else sys.executable
-
     def run(self, request, run):
         if request["mode"] == "url":
             tool, arguments = "get_post_details", {"url": request["question"]}
@@ -245,23 +240,42 @@ class ShortsSkill(Skill):  # Jarvis as an MCP client: calls the free youtube-sho
             else:
                 tool, arguments = "search_youtube_shorts", {"query": request["question"]}
             arguments.update(limit=request["limit"], details=request["details"])
-        with tempfile.TemporaryDirectory() as folder:
-            output = Path(folder) / "result.json"
-            run.emit("stage_start", stage="mcp", title="MCP · youtube-shorts")
-            started = time.time()
-            code = run.run_process("mcp", [self.python(), str(self.SOCIAL_MCP / "jarvis_client.py"), "--tool", tool,
-                                           "--args", json.dumps(arguments), "--output", str(output)],
-                                   str(self.SOCIAL_MCP), {})
-            run.check_cancelled()
-            run.emit("stage_end", stage="mcp", status="ok" if code == 0 else "error", code=code,
-                     seconds=round(time.time() - started, 2))
-            if code != 0:
-                reason = next((e["line"] for e in reversed(run.events) if e["type"] == "log" and e["stage"] == "mcp"
-                               and e["line"].startswith(("STOP:", "ERROR:"))), None)
-                raise RuntimeError("YouTube Shorts MCP call failed — " + (reason or f"exit code {code}, see the log"))
-            data = json.loads(output.read_text(encoding="utf-8"))
+        run.emit("stage_start", stage="mcp", title="MCP · youtube-shorts")
+        started = time.time()
+        try:
+            data = mcp_call(run, "mcp", "youtube-shorts", tool, arguments)
+            data = data if isinstance(data, dict) else {}
+            error = None if data.get("ok") else data.get("error") or "the tool returned no result"
+        except mcp_client.McpError as failure:  # the server didn't start, crashed, timed out or refused the call
+            data, error = {}, str(failure)
+        if error:
+            run.emit("log", stage="mcp", line=f"ERROR: {error}")
+        run.emit("stage_end", stage="mcp", status="error" if error else "ok", code=1 if error else 0,
+                 seconds=round(time.time() - started, 2))
+        if error:
+            raise RuntimeError(f"YouTube Shorts MCP call failed — ERROR: {error}")
         posts = data.get("posts") or ([data["post"]] if data.get("post") else [])  # get_post_details returns one post
+        for post in posts:
+            run.emit("log", stage="mcp", line=f"  • {post.get('title')}  ({post.get('url')})")
+        run.emit("log", stage="mcp", line=f"MCP: {data.get('count', len(posts))} result(s)")
         run.emit("posts", tool=tool, query=request["question"], posts=posts)
+
+
+def mcp_call(run, stage, server, tool, arguments, timeout=120):
+    """One tool call over Jarvis's shared MCP connection (mcp_client.py), logged in the stage; returns the tool's JSON.
+
+    The server's stderr and an "MCP: call ..." line go to the Mission log. Cancel stops the wait, not the server."""
+    def log(line):  # may be called after the call returns (a late stderr line): only while the run is live
+        if run.status == "running" and run.log_lines < runs.MAX_LOG_LINES:  # a chatty server can't fill memory
+            run.log_lines += 1
+            run.emit("log", stage=stage, line=line)
+    try:
+        data = mcp_client.call_tool(server, tool, arguments, log=log, cancelled=lambda: run.cancelled, timeout=timeout)
+    except mcp_client.Cancelled:
+        run.check_cancelled()
+        raise
+    run.check_cancelled()
+    return data
 
 
 QUERY_SCHEMA = {"type": "object", "properties": {"query": {"type": "string"}}, "required": ["query"],
@@ -481,7 +495,6 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
     description = ("Make a meme through the memes MCP server (open-source Memegen, free). Say what it's about, "
                    "or name a template and write the captions: \"drake meme: writing tests / shipping on friday\".")
     needs_question = True
-    MEME_MCP = Path(__file__).resolve().parents[2] / "mcp-servers" / "meme-mcp"  # session-5/mcp-servers/meme-mcp
     MEDIA = Path(__file__).resolve().parent / "data" / "media"  # locally drawn memes, served at /media/<name>
     options = [
         {"key": "template", "label": "Template", "type": "text", "default": "", "placeholder": "auto (e.g. drake)"},
@@ -541,20 +554,20 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
                 break
         return facts
 
-    def python(self):  # the MCP server's own venv if there is one; else this Python (needs fastmcp, pillow, pyyaml)
-        venv = self.MEME_MCP / ".venv" / ("Scripts/python.exe" if os.name == "nt" else "bin/python")
-        return str(venv) if venv.exists() else sys.executable
-
-    def call(self, run, stage, tool, arguments):  # one MCP tool call through jarvis_client.py; returns its JSON
-        with tempfile.TemporaryDirectory() as folder:
-            output = Path(folder) / "result.json"
-            code = run.run_process(stage, [self.python(), str(self.MEME_MCP / "jarvis_client.py"), "--tool", tool,
-                                           "--args", json.dumps(arguments, ensure_ascii=False), "--output", str(output)],
-                                   str(self.MEME_MCP), {})
-            run.check_cancelled()
-            data = json.loads(output.read_text(encoding="utf-8")) if output.exists() else {}
-        if code != 0 or not data.get("ok"):
-            raise RuntimeError("Memes MCP call failed — " + str(data.get("error") or f"exit code {code}, see the log"))
+    def call(self, run, stage, tool, arguments):  # one call to the memes MCP server (shared connection); returns its JSON
+        try:
+            data = mcp_call(run, stage, "memes", tool, arguments)
+            data = data if isinstance(data, dict) else {}
+        except mcp_client.McpError as failure:  # e.g. an invalid template id: the server's own message
+            data = {"ok": False, "error": str(failure)}
+        if not data.get("ok"):
+            error = data.get("error") or "the tool returned no result"
+            run.emit("log", stage=stage, line=f"ERROR: {error}")
+            raise RuntimeError(f"Memes MCP call failed — {error}")
+        if data.get("url") or data.get("file"):
+            run.emit("log", stage=stage, line=f"MCP: meme ready ({data.get('renderer')}): {data.get('url') or data.get('file')}")
+        else:
+            run.emit("log", stage=stage, line=f"MCP: {data.get('count', 0)} result(s)")
         return data
 
     def templates(self, run):

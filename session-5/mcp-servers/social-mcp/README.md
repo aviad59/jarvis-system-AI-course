@@ -19,6 +19,8 @@ uv pip install --python .venv/Scripts/python.exe -r requirements.txt
 ```
 
 ## Used by
-- **Claude Code**: `.mcp.json` in the repo root registers it as `youtube-shorts`. Approve it, then check with `/mcp`.
-- **Jarvis**: the **YouTube Shorts** skill (`session-5/jarvis-rag/jarvis/skills.py`) runs `jarvis_client.py`,
-  which connects to `server.py` over MCP stdio and calls one tool.
+- **Claude Code**: `session-5/.mcp.json` registers it as `youtube-shorts`. Approve it, then check with `/mcp`.
+- **Jarvis**: the **YouTube Shorts** skill (`session-5/jarvis-rag/jarvis/skills.py`) calls these tools through
+  `jarvis/mcp_client.py`, Jarvis's MCP client. It reads the same `.mcp.json`, starts `server.py` with this folder's
+  `.venv` (or Jarvis's own Python if there is none) on the first request, and keeps it running: later requests reuse
+  the same process, so yt-dlp loads once. If the server crashes, the next request starts it again.
