@@ -67,7 +67,7 @@ class RagSkill(Skill):
     needs_question = True
     options = [
         {"key": "documents", "label": "Documents", "type": "select", "choices": list(rag.DOCUMENT_SOURCES), "default": "vault"},
-        {"key": "provider", "label": "Answer with", "type": "select", "choices": ["ollama", "anthropic"], "default": "ollama"},
+        {"key": "provider", "label": "Answer with", "type": "select", "choices": list(rag.PROVIDERS), "default": "ollama"},
         {"key": "model", "label": "Model", "type": "text", "default": "", "placeholder": "default for provider"},
         {"key": "source", "label": "Vectors from", "type": "select", "choices": ["local", "mongodb"], "default": "local"},
         {"key": "hybrid", "label": "Hybrid (BM25 + RRF)", "type": "bool", "default": False},
@@ -119,12 +119,8 @@ class RagSkill(Skill):
             rag.HISTORY.write_text(json.dumps(request["history"], ensure_ascii=False), encoding="utf-8")
         if request.get("rewrite"):
             request = self.resolve(request, run)
-        env = {}
-        if request["provider"] == "anthropic":  # fail before indexing, not at the last stage
-            key, _ = rag.find_anthropic_key()
-            if not key:
-                raise ValueError("ANTHROPIC_API_KEY is not set. Add it to a .env file next to rag.py, or choose the ollama provider")
-            env["ANTHROPIC_API_KEY"] = key  # passed to the child only; never emitted
+        env = rag.provider_env(request["provider"])  # fails before indexing, not at the last stage;
+        # the key is passed to the child process only and never emitted
         for step in self.steps(request):
             run.emit("stage_start", stage=step["id"], title=step["title"])
             started = time.time()
@@ -193,7 +189,7 @@ class VaultSyncSkill(Skill):  # started by the vault watcher (vault_watch.py) wh
 
 class StatusSkill(Skill):
     name, title = "status", "System check"
-    description = "Check Ollama, MongoDB Atlas, the Anthropic key, the Obsidian vault, the local index and Whisper."
+    description = "Check Ollama, MongoDB Atlas, the Anthropic and Gemini keys, the Obsidian vault, the local index and Whisper."
     needs_question = False
 
     def stages(self, request):
@@ -292,19 +288,31 @@ QUERY_PROMPT = ("Turn an answer into a YouTube search.\n\n"
                 "video). If the answer names nothing specific, return an empty query. Reply as JSON: {{\"query\": \"...\"}}")
 
 
-def ask_json(prompt, schema, provider, model, timeout=90, strict=True):  # one small structured call to the answer model
-    """strict=False (Ollama only): no "format" in the request, the JSON is read from the reply text. Any format turns off
+GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
+
+
+def ask_json(prompt, schema, provider, model, timeout=90, temperature=0, num_predict=None, strict=True):
+    """One small structured call to the answer model; returns the parsed JSON. ValueError if its API key is missing.
+
+    strict=False (Ollama only): no "format" in the request, the JSON is read from the reply text. Any format turns off
     Ollama's prompt cache, so a long fixed prompt (the router's tool list) is read again on every call: on a CPU that
     is ~10 s for 700 tokens. The caller must check the values itself."""
+    key = next(iter(rag.provider_env(provider).values()), "")
     if provider == "anthropic":
-        url = "https://api.anthropic.com/v1/messages"
-        headers = {"x-api-key": rag.find_anthropic_key()[0] or "", "anthropic-version": "2026-10-21"}
+        url, headers = "https://api.anthropic.com/v1/messages", {"x-api-key": key, "anthropic-version": "2026-10-21"}
         payload = {"model": model, "max_tokens": 300, "messages": [{"role": "user", "content": prompt}],
                    "output_config": {"format": {"type": "json_schema", "schema": schema}}}
+    elif provider == "gemini":  # the key goes in a header, never in the URL
+        url, headers = f"{GEMINI_API}/models/{model}:generateContent", {"x-goog-api-key": key}
+        payload = {"contents": [{"role": "user", "parts": [{"text": prompt}]}],
+                   "generationConfig": {"responseMimeType": "application/json", "responseJsonSchema": schema,
+                                        "temperature": temperature,
+                                        "maxOutputTokens": 4096}}  # leaves room for thinking tokens, which count toward it
     else:
         url, headers = "http://localhost:11434/api/chat", {}
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
-                   "stream": False, "options": {"temperature": 0, **({} if strict else {"num_predict": 80})}}
+        num_predict = num_predict or (None if strict else 80)
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "stream": False,
+                   "options": {"temperature": temperature, **({"num_predict": num_predict} if num_predict else {})}}
         if strict:
             payload["format"] = schema
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
@@ -313,6 +321,9 @@ def ask_json(prompt, schema, provider, model, timeout=90, strict=True):  # one s
         reply = json.loads(response.read().decode("utf-8"))
     if provider == "anthropic":
         text = "".join(b.get("text", "") for b in reply.get("content", []) if b.get("type") == "text")
+    elif provider == "gemini":  # skip thought parts; a blocked or cut-off reply has no JSON and fails to parse below
+        parts = ((reply.get("candidates") or [{}])[0].get("content") or {}).get("parts", [])
+        text = "".join(part.get("text", "") for part in parts if not part.get("thought"))
     else:
         text = reply.get("message", {}).get("content", "")
     if not strict:  # free text: the first {...} in the reply (models sometimes wrap it in ```json fences)
@@ -507,7 +518,7 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
     MEDIA = Path(__file__).resolve().parent / "data" / "media"  # locally drawn memes, served at /media/<name>
     options = [
         {"key": "template", "label": "Template", "type": "text", "default": "", "placeholder": "auto (e.g. drake)"},
-        {"key": "captions_by", "label": "Captions by", "type": "select", "choices": ["ollama", "anthropic"], "default": "ollama"},
+        {"key": "captions_by", "label": "Captions by", "type": "select", "choices": list(rag.PROVIDERS), "default": "ollama"},
         {"key": "use_notes", "label": "Use my notes", "type": "bool", "default": True},
     ]
     _templates = {"list": None, "at": 0.0}
@@ -603,24 +614,7 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
                   "properties": {"template_id": {"type": "string", "enum": ids},
                                  "lines": {"type": "array", "items": {"type": "string"}, "minItems": count, "maxItems": count}}}
         model = rag.DEFAULT_MODELS[provider]
-        if provider == "anthropic":
-            key, _ = rag.find_anthropic_key()
-            if not key:
-                raise ValueError("ANTHROPIC_API_KEY is not set; choose ollama for the captions")
-            url, headers = "https://api.anthropic.com/v1/messages", {"x-api-key": key, "anthropic-version": "2026-10-21"}
-            payload = {"model": model, "max_tokens": 300, "messages": [{"role": "user", "content": prompt}],
-                       "output_config": {"format": {"type": "json_schema", "schema": schema}}}
-        else:
-            url, headers = "http://localhost:11434/api/chat", {}
-            payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "format": schema,
-                       "stream": False, "options": {"temperature": 0.8, "num_predict": 160}}
-        call = urllib.request.Request(url, data=json.dumps(payload, ensure_ascii=False).encode("utf-8"),
-                                      headers={"Content-Type": "application/json", **headers}, method="POST")
-        with urllib.request.urlopen(call, timeout=120) as response:
-            reply = json.loads(response.read().decode("utf-8"))
-        text = ("".join(b.get("text", "") for b in reply.get("content", []) if b.get("type") == "text")
-                if provider == "anthropic" else reply.get("message", {}).get("content", ""))
-        plan = json.loads(text)
+        plan = ask_json(prompt, schema, provider, model, timeout=120, temperature=0.8, num_predict=160)
         lines = [str(line).strip() for line in plan.get("lines", [])][:count]
         lines += [""] * (count - len(lines))  # one entry per text box, even if the model gave fewer
         if not any(lines):
@@ -653,7 +647,7 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
                 raise
             except Exception as error:
                 if not lines:
-                    raise RuntimeError(f"Couldn't write captions ({type(error).__name__}: is Ollama running?). "
+                    raise RuntimeError(f"Couldn't write captions ({type(error).__name__}: is {request['captions_by']} reachable?). "
                                        "Write them yourself: \"drake meme: top text / bottom text\"") from None
                 template = template or ("drake" if len(lines) == 2 else "fry")
         run.check_cancelled()

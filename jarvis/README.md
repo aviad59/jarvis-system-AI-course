@@ -31,6 +31,7 @@ python -m pip install transformers edge-tts
 
 Optional secrets (git-ignored, not copied here). Put them back by hand if you use them:
 - `.env` next to `rag.py` with `ANTHROPIC_API_KEY=...` → **Answer with: anthropic**
+- `.env` next to `rag.py` with `GEMINI_API_KEY=...` ([Google AI Studio](https://aistudio.google.com/apikey)) → **Answer with: gemini**
 - `exercise-1-indexing/atlas-credentials.env` → **Vectors from: mongodb**
 
 ## 2. Run Jarvis (Terminal 1, Ollama app open)

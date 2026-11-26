@@ -5,10 +5,12 @@ from pathlib import Path  # עובדים עם קבצים ותיקיות בכל �
 from runtime import generate, load_search, write_view  # מייבאים את תשתית החיבור והצגת הפלט המסופקת.
 from student import assemble_context, invalid_citation_ids  # מייבאים את הפונקציות שהתלמידים משלימים.
 
+ENDPOINTS = {"anthropic": "https://api.anthropic.com/v1", "gemini": "https://generativelanguage.googleapis.com/v1beta"}  # כתובות ברירת המחדל של ספקי הענן.
+
 def main():  # מרכזים את סדר ההרצה בפונקציה אחת.
     parser = argparse.ArgumentParser(description="Build context and generate an incident answer")  # יוצרים עזרה שמוצגת עם האפשרות help.
     parser.add_argument("--input", default="fixtures/search-results.json")  # ברירת המחדל היא קלט סינתטי מסומן; להמשך אמיתי נותנים נתיב לפלט תרגיל2.
-    parser.add_argument("--provider", choices=["ollama", "anthropic", "offline_fixture"], default="offline_fixture")  # ברירת המחדל פועלת ללא מודל וללא תשלום.
+    parser.add_argument("--provider", choices=["ollama", "anthropic", "gemini", "offline_fixture"], default="offline_fixture")  # ברירת המחדל פועלת ללא מודל וללא תשלום.
     parser.add_argument("--model")  # במסלול אמיתי בוחרים מודל זמין בחשבון או בשרת המקומי.
     parser.add_argument("--endpoint")  # אפשר לציין כתובת שרת אחרת במפורש.
     parser.add_argument("--max-chars", type=int, default=12000)  # מגבילים את טקסט המקורות בתווים; זו אינה ספירת טוקנים.
@@ -29,7 +31,7 @@ def main():  # מרכזים את סדר ההרצה בפונקציה אחת.
             turns = json.loads(Path(args.history).read_text(encoding="utf-8"))
             if turns:
                 context["conversation"] = turns  # מרכיבים את ההקשר באמצעות הקוד שהתלמידים משלימים.
-        endpoint = args.endpoint or ("https://api.anthropic.com/v1" if args.provider == "anthropic" else "http://localhost:11434")  # בוחרים את כתובת הספק; הנתיבים של Messages ושל Ollama שונים.
+        endpoint = args.endpoint or ENDPOINTS.get(args.provider, "http://localhost:11434")  # בוחרים את כתובת הספק; הנתיבים של Messages, של Gemini ושל Ollama שונים.
         answer, seconds = generate(context, args.provider, args.model, endpoint, args.timeout, args.fixture)  # מקבלים תשובה ממודל או תשובה קבועה מה־fixture המסומן.
         try:  # בודק ההפניות הוא בונוס נפרד מליבת התרגיל.
             invalid = invalid_citation_ids(answer, context["sources"])  # משווים את ההפניות למקורות שנשלחו בפועל, לא לכל האינדקס.

@@ -27,6 +27,8 @@ needed). Choose **Vectors from: mongodb** to use MongoDB Atlas instead.
 
 Answers are generated locally by Ollama (`gemma3:4b`) by default. To answer with Claude instead,
 put `ANTHROPIC_API_KEY=...` in a `.env` file next to `rag.py` and choose **Answer with: anthropic**.
+To answer with Google Gemini (`gemini-3.8-flash`), put `GEMINI_API_KEY=...` there and choose
+**Answer with: gemini**. `GOOGLE_API_KEY` is accepted too.
 
 ## Obsidian vault (session 5)
 
@@ -52,6 +54,7 @@ The Systems panel shows the watcher's state.
 | Dialogue | Answers as claims with citation chips; click a chip to see the exact source chunk |
 | Pipeline telemetry | Each stage with live timer and status, retrieved evidence with scores, raw log |
 | Mission log | Every run, saved in `jarvis/data/runs/`; click to replay. Link a run with `/#run=<id>` |
+| Feedback | Under every finished answer: **▲ Good** or **⚑ Report a problem**: tick boxes (slow response, wrong behavior, misunderstood the request, incorrect / made-up answer, incomplete, bad sources, wrong language, voice problem, wrong video or meme, other) plus an optional comment. Saved on the run (shown in the Mission log) and appended to `jarvis/data/runs/feedback.jsonl` with the question, skill, model and duration; `GET /api/feedback` lists the latest reports |
 
 ### Ask Jarvis: one box for everything
 

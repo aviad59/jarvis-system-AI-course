@@ -1,4 +1,4 @@
-"""End-to-end RAG: index (exercise 1) -> retrieve (exercise 2) -> answer with Ollama or Claude (exercise 3).
+"""End-to-end RAG: index (exercise 1) -> retrieve (exercise 2) -> answer with Ollama, Claude or Gemini (exercise 3).
 
 Each stage runs the exercise's own script in its own folder, so the exercises stay
 independent and every intermediate file is kept where you already know to look:
@@ -28,25 +28,47 @@ INDEX_FILE = EX1 / "build" / "index.json"  # the local copy of the index, writte
 SEARCH_RESULTS = EX2 / "build" / "search-results.json"
 ANSWER = EX3 / "artifacts" / "answer.json"
 HISTORY = EX3 / "artifacts" / "history.json"  # the conversation so far, for the answer model (Jarvis)
-KEY_FILES = tuple(folder / name for folder in (ROOT, ROOT / "jarvis", EX3, EX1)  # where ANTHROPIC_API_KEY=... may live
+KEY_FILES = tuple(folder / name for folder in (ROOT, ROOT / "jarvis", EX3, EX1)  # where ANTHROPIC_API_KEY=... / GEMINI_API_KEY=... may live
                   for name in (".env", "atlas-credentials.env"))
-DEFAULT_MODELS = {"anthropic": "claude-opus-5-5", "ollama": "gemma3:4b"}
+DEFAULT_MODELS = {"anthropic": "claude-opus-5-5", "gemini": "gemini-3.8-flash", "ollama": "gemma3:4b"}
+PROVIDERS = ("ollama", "anthropic", "gemini")  # who can write the answer; the embeddings always come from Ollama
+API_KEYS = {"anthropic": ("ANTHROPIC_API_KEY",), "gemini": ("GEMINI_API_KEY", "GOOGLE_API_KEY")}  # cloud providers only
 # Session 5: the Obsidian vault with the team notes. Override with JARVIS_VAULT=<folder>.
 VAULT = Path(os.environ.get("JARVIS_VAULT") or Path.home() / "Documents" / "Obsidian Vault")
 DOCUMENT_SOURCES = ("vault", "course", "both")  # vault notes, the session-4 incident documents, or both
-GENERATION_TIMEOUT = {"anthropic": 300, "ollama": 900}  # seconds; a 4B model on a CPU can need several minutes
+GENERATION_TIMEOUT = {"anthropic": 300, "gemini": 300, "ollama": 900}  # seconds; a 4B model on a CPU can need several minutes
 
 
-def find_anthropic_key():  # (key, where it came from) or (None, None); the key is never printed
-    if os.environ.get("ANTHROPIC_API_KEY"):
-        return os.environ["ANTHROPIC_API_KEY"], "environment"
-    for path in KEY_FILES:
-        if path.exists():
-            for line in path.read_text(encoding="utf-8-sig").splitlines():
-                key, _, value = line.strip().removeprefix("export ").partition("=")
-                if key.strip().upper() == "ANTHROPIC_API_KEY" and value.strip():
-                    return value.strip().strip("'\""), str(path.relative_to(ROOT))
+def find_key(*names):  # (key, where it came from) or (None, None) for the first of these variables; never printed
+    for name in names:
+        if os.environ.get(name):
+            return os.environ[name], "environment"
+    for name in names:
+        for path in KEY_FILES:
+            if path.exists():
+                for line in path.read_text(encoding="utf-8-sig").splitlines():
+                    key, _, value = line.strip().removeprefix("export ").partition("=")
+                    if key.strip().upper() == name and value.strip():
+                        return value.strip().strip("'\""), str(path.relative_to(ROOT))
     return None, None
+
+
+def find_anthropic_key():
+    return find_key(*API_KEYS["anthropic"])
+
+
+def find_gemini_key():  # GEMINI_API_KEY, or GOOGLE_API_KEY as Google's own SDKs also accept
+    return find_key(*API_KEYS["gemini"])
+
+
+def provider_env(provider):  # {"<KEY VARIABLE>": key} for a cloud provider, {} for Ollama; ValueError if the key is missing
+    if provider not in API_KEYS:
+        return {}
+    key, _ = find_key(*API_KEYS[provider])
+    if not key:
+        raise ValueError(f"{API_KEYS[provider][0]} is not set. Add {API_KEYS[provider][0]}=... to a .env file next to "
+                         "rag.py, or choose the ollama provider")
+    return {API_KEYS[provider][0]: key}  # the generation stage reads the first name only
 
 
 _index_cache = {"key": None, "corpus": None, "vault": {}}
@@ -151,18 +173,20 @@ def main():
     parser.add_argument("--hybrid", action="store_true", help="Exercise 2 bonus: semantic + BM25 fused with RRF")
     parser.add_argument("--top-k", type=int, default=3)
     parser.add_argument("--exclude-superseded", action="store_true", help="Drop documents replaced by a newer version")
-    parser.add_argument("--provider", choices=("ollama", "anthropic"), default="ollama", help="Generation provider")
-    parser.add_argument("--model", help="Generation model (default: gemma3:4b, or claude-opus-5-5 for anthropic)")
-    parser.add_argument("--ask-key", action="store_true", help="Type the Anthropic API key privately")
+    parser.add_argument("--provider", choices=PROVIDERS, default="ollama", help="Generation provider")
+    parser.add_argument("--model", help="Generation model (default: gemma3:4b; claude-opus-5-5 for anthropic; "
+                                        "gemini-3.8-flash for gemini)")
+    parser.add_argument("--ask-key", action="store_true", help="Type the Anthropic or Gemini API key privately")
     args = parser.parse_args()
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
-    if args.provider == "anthropic":  # checked up front, so we don't index and search only to fail at the last stage
-        key, _ = find_anthropic_key()
+    if args.provider in API_KEYS:  # checked up front, so we don't index and search only to fail at the last stage
+        name = API_KEYS[args.provider][0]
+        key, _ = find_key(*API_KEYS[args.provider])
         if not key and args.ask_key:
-            key = getpass.getpass("Anthropic API key (hidden): ")
+            key = getpass.getpass(f"{args.provider.capitalize()} API key (hidden): ")
         if not key:
-            raise SystemExit("STOP: ANTHROPIC_API_KEY is not set. Set it, add ANTHROPIC_API_KEY=... to a .env file, or add --ask-key")
-        env["ANTHROPIC_API_KEY"] = key
+            raise SystemExit(f"STOP: {name} is not set. Set it, add {name}=... to a .env file, or add --ask-key")
+        env[name] = key
     steps = build_steps(args.question, args.skip_index, args.structured, args.embedding_model, args.hybrid,
                         args.top_k, args.exclude_superseded, args.provider, args.model, args.source, args.documents)
     for number, step in enumerate(steps, 1):

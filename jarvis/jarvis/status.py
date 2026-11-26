@@ -10,7 +10,7 @@ import threading  # cache guard
 import time  # cache age
 import urllib.request  # talk to Ollama
 from concurrent.futures import ThreadPoolExecutor  # run checks in parallel
-import rag  # paths and the Anthropic key lookup
+import rag  # paths and the API key lookups
 
 OLLAMA = "http://127.0.0.1:11434"
 REQUIRED_MODELS = ("embeddinggemma", "gemma3:4b")
@@ -69,6 +69,12 @@ def check_anthropic():
             "detail": f"key found ({source})" if key else "ANTHROPIC_API_KEY not set — use the ollama provider or add a .env"}
 
 
+def check_gemini():
+    key, source = rag.find_gemini_key()
+    return {"ok": bool(key), "label": "Gemini API",
+            "detail": f"key found ({source})" if key else "GEMINI_API_KEY not set — use the ollama provider or add a .env"}
+
+
 def check_index():
     path = rag.EX1 / "build" / "index.json"
     if not path.exists():
@@ -99,7 +105,7 @@ def check_tts():
     return tts.engine_status()
 
 
-CHECKS = {"ollama": check_ollama, "atlas": check_atlas, "anthropic": check_anthropic, "vault": check_vault, "index": check_index,
+CHECKS = {"ollama": check_ollama, "atlas": check_atlas, "anthropic": check_anthropic, "gemini": check_gemini, "vault": check_vault, "index": check_index,
           "voice": check_voice, "tts": check_tts}
 
 

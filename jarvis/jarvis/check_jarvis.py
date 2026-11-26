@@ -633,6 +633,33 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual(history[0]["headline"], "done")
         self.assertEqual(self.json(f"/api/runs/{run_id}")[1]["summary"]["status"], "done")
 
+    def test_feedback_on_a_finished_run(self):  # tick boxes (slow, wrong behavior, ...) saved on the run and in the log
+        self.wait_idle()
+        issues = {i["id"] for i in self.json("/api/feedback")[1]["issues"]}
+        self.assertTrue({"slow", "wrong_behavior", "other"} <= issues)
+        run_id = self.json("/api/runs", {"skill": "fake", "request": {"question": "rate me", "lines": 1}})[1]["run_id"]
+        self.events(run_id)
+        code, data = self.json(f"/api/runs/{run_id}/feedback", {"issues": ["wrong_behavior", "slow", "slow"], "comment": " איטי "})
+        self.assertEqual(code, 200)
+        self.assertEqual(data["feedback"]["rating"], "bad")  # a report without a rating is a 'bad' one
+        self.assertEqual(data["feedback"]["issues"], ["slow", "wrong_behavior"])  # known order, no duplicates
+        self.assertEqual(data["feedback"]["comment"], "איטי")
+        self.assertEqual(self.json(f"/api/runs/{run_id}")[1]["summary"]["feedback"]["issues"], ["slow", "wrong_behavior"])
+        report = self.json("/api/feedback")[1]["reports"][0]
+        self.assertEqual((report["run_id"], report["question"], report["model"]), (run_id, "rate me", "fake"))
+        self.assertEqual(self.json(f"/api/runs/{run_id}/feedback", {"rating": "good"})[1]["feedback"]["issues"], [])  # replaces
+        self.assertEqual(next(r for r in self.json("/api/runs")[1]["runs"] if r["id"] == run_id)["feedback"]["rating"], "good")
+        saved = json.loads((Path(self.tmp.name) / f"{run_id}.json").read_text(encoding="utf-8"))
+        self.assertEqual(saved["summary"]["feedback"]["rating"], "good")  # survives a restart
+        manager = server.Handler.manager
+        manager.runs.pop(run_id)  # as after a restart: the run comes from disk
+        self.assertEqual(self.json(f"/api/runs/{run_id}/feedback", {"issues": ["incorrect"]})[0], 200)
+        self.assertEqual(self.json(f"/api/runs/{run_id}")[1]["summary"]["feedback"]["issues"], ["incorrect"])
+        for bad in ({"issues": ["nope"]}, {"rating": "meh"}, {}, {"rating": "good", "issues": ["slow"]},
+                    {"comment": "x" * 1001}, ["slow"]):
+            self.assertEqual(self.json(f"/api/runs/{run_id}/feedback", bad)[0], 400, bad)
+        self.assertEqual(self.json("/api/runs/does-not-exist/feedback", {"rating": "good"})[0], 404)
+
     def test_busy_and_cancel(self):
         self.wait_idle()
         code, data = self.json("/api/runs", {"skill": "fake", "request": {"lines": 40, "pause": True}})
@@ -652,7 +679,7 @@ class JarvisServer(unittest.TestCase):
         code, raw, _ = self.request("/api/status?force=1", timeout=90)  # an unreachable Atlas takes ~30 s to time out
         self.assertEqual(code, 200)
         data = json.loads(raw)
-        self.assertEqual(set(data["systems"]), {"ollama", "atlas", "anthropic", "vault", "index", "voice", "tts"})
+        self.assertEqual(set(data["systems"]), {"ollama", "atlas", "anthropic", "gemini", "vault", "index", "voice", "tts"})
         text = raw.decode("utf-8")
         for marker in ("mongodb+srv://", "mongodb://", "sk-ant-", "password", ".mongodb.net"):
             self.assertNotIn(marker, text)
