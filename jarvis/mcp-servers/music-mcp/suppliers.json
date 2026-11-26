@@ -1,0 +1,18 @@
+{
+  "default": "suno",
+  "suppliers": {
+    "suno": {
+      "name": "Suno",
+      "url": "https://api.suno.com/mcp",
+      "auth": "oauth",
+      "site": "https://suno.com/mcp",
+      "embed": "https://suno.com/embed/{id}",
+      "ops": {
+        "create_song": {"tool": "audio-create", "description_or_lyrics": true},
+        "get_song": {"tool": "audio-wait", "args": {"song_id": "ids"}},
+        "list_songs": "library-list",
+        "get_credits": "account-usage"
+      }
+    }
+  }
+}

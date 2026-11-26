@@ -136,13 +136,15 @@ def index_steps(documents="vault", source="local", structured=False, embedding_m
 
 def build_steps(question, skip_index=False, structured=False, embedding_model="embeddinggemma", hybrid=False,
                 top_k=3, exclude_superseded=False, provider="ollama", model=None, source="local", documents="vault",
-                history_file=None, index_busy=False):
+                history_file=None, senders=None, date_from=None, date_to=None, query=None, index_busy=False):
     """Return the pipeline as a list of steps: {'id', 'title', 'folder', 'args'} (args exclude the Python executable).
 
     source="mongodb" stores and reads the vectors in MongoDB Atlas; source="local" uses only INDEX_FILE.
     documents="vault" indexes the Obsidian vault (VAULT), "course" the incident documents, "both" all of them.
     skip_index is ignored when the saved index is out of date (other documents, or the vault changed), unless
     index_busy: a sync is rebuilding the index right now, so the last finished one is searched as it is.
+    senders / date_from / date_to: optional chat filters (MongoDB only); none = retrieval exactly as before.
+    query: the text to search, when it differs from the question (self-query keeps only the topic).
     """
     steps = index_steps(documents, source, structured, embedding_model)  # also validates source and documents
     if skip_index and (index_busy or not index_is_stale(documents)):
@@ -153,12 +155,60 @@ def build_steps(question, skip_index=False, structured=False, embedding_model="e
                   "folder": EX2,  # vectors from MongoDB, or from INDEX_FILE when local
                   "args": ["hybrid_search.py" if hybrid else "search.py", "--question", question, "--top-k", str(top_k),
                            "--output", str(SEARCH_RESULTS), *(["--exclude-superseded"] if exclude_superseded else []),
-                           *(["--source", "file", "--index", str(INDEX_FILE)] if local else [])]})
+                           *(["--source", "file", "--index", str(INDEX_FILE)] if local else []),
+                           *(["--query", query] if query and query != question else []),
+                           *(["--senders", ",".join(senders)] if senders else []),
+                           *(["--from", date_from] if date_from else []), *(["--to", date_to] if date_to else [])]})
     steps.append({"id": "answer", "title": f"Answer ({model})", "folder": EX3,
                   "args": ["run.py", "--input", str(SEARCH_RESULTS), "--provider", provider, "--model", model,
                            "--output", str(ANSWER), "--require-citations", "--timeout", str(GENERATION_TIMEOUT[provider]),
                            *(["--history", str(history_file)] if history_file else [])]})
     return steps
+
+
+def _load(name, path):  # an exercise module, loaded by path under a unique name (the folders share module names)
+    import importlib.util
+    if name not in sys.modules:
+        spec = importlib.util.spec_from_file_location(name, path)
+        module = importlib.util.module_from_spec(spec)
+        sys.modules[name] = module
+        spec.loader.exec_module(module)
+    return sys.modules[name]
+
+
+_participants_cache = {"at": 0.0, "names": []}
+
+
+def chat_participants(max_age=60):  # canonical chat senders from MongoDB (the participants collection), cached
+    import time
+    if time.time() - _participants_cache["at"] < max_age:
+        return _participants_cache["names"]
+    atlas = _load("ex1_atlas_upload", EX1 / "atlas_upload.py")
+    settings, problem = atlas.atlas_settings(EX1)
+    if problem:
+        raise ValueError(problem)
+    client = atlas.connect(settings["uri"])
+    try:
+        names = [row["_id"] for row in client[settings["db"]]["participants"].find({}, {"_id": 1})
+                 .sort([("message_count", -1), ("_id", 1)])]
+    finally:
+        client.close()
+    _participants_cache.update(at=time.time(), names=names)
+    return names
+
+
+def self_query(question, ask):
+    """Question -> {query, senders, from, to, dropped, filtered} with one structured call: ask(prompt, schema) -> dict.
+
+    Uses the known chat participants and today's date in the chat's time zone. No participants (no chats in
+    MongoDB) -> no call, the question is searched as asked."""
+    from datetime import datetime
+    extractor = _load("ex2_self_query", EX2 / "self_query.py")
+    participants = chat_participants()
+    if not participants:
+        return {"query": question, "senders": [], "from": "", "to": "", "dropped": [], "filtered": False}
+    today = datetime.now(_load("ex2_chat_filters", EX2 / "chat_filters.py").chat_timezone()).date()
+    return extractor.extract(question, participants, ask, today)
 
 
 def main():
@@ -178,7 +228,14 @@ def main():
     parser.add_argument("--model", help="Generation model (default: gemma3:4b; claude-opus-5-5 for anthropic; "
                                         "gemini-3.8-flash for gemini)")
     parser.add_argument("--ask-key", action="store_true", help="Type the Anthropic or Gemini API key privately")
+    parser.add_argument("--senders", help="Chat filter: comma-separated canonical sender names (needs --source mongodb)")
+    parser.add_argument("--from", dest="date_from", help="Chat filter: YYYY-MM-DD[THH:MM] (needs --source mongodb)")
+    parser.add_argument("--to", dest="date_to", help="Chat filter: YYYY-MM-DD[THH:MM] (needs --source mongodb)")
+    parser.add_argument("--self-query", action="store_true",
+                        help="Extract sender/time filters from the question with the answer model (needs --source mongodb)")
     args = parser.parse_args()
+    if (args.senders or args.date_from or args.date_to or args.self_query) and args.source != "mongodb":
+        parser.error("sender/time filters and --self-query need --source mongodb")
     env = {**os.environ, "PYTHONIOENCODING": "utf-8"}
     if args.provider in API_KEYS:  # checked up front, so we don't index and search only to fail at the last stage
         name = API_KEYS[args.provider][0]
@@ -188,8 +245,22 @@ def main():
         if not key:
             raise SystemExit(f"STOP: {name} is not set. Set it, add {name}=... to a .env file, or add --ask-key")
         env[name] = key
+        os.environ[name] = key  # the self-query call below runs in this process
+    query, senders = None, [s.strip() for s in (args.senders or "").split(",") if s.strip()]
+    date_from, date_to = args.date_from, args.date_to
+    if args.self_query:
+        sys.path.insert(0, str(ROOT / "jarvis"))
+        from skills import ask_json  # the same structured call Jarvis uses, for every provider
+        model = args.model or DEFAULT_MODELS[args.provider]
+        found = self_query(args.question, lambda prompt, schema: ask_json(prompt, schema, args.provider, model))
+        print(f"SELF-QUERY: query={found['query']!r} senders={found['senders']} from={found['from']!r} to={found['to']!r}")
+        for item in found["dropped"]:
+            print(f"SELF-QUERY: dropped {item['field']}={item['value']!r} ({item['reason']})")
+        query = found["query"]
+        senders, date_from, date_to = senders or found["senders"], date_from or found["from"], date_to or found["to"]
     steps = build_steps(args.question, args.skip_index, args.structured, args.embedding_model, args.hybrid,
-                        args.top_k, args.exclude_superseded, args.provider, args.model, args.source, args.documents)
+                        args.top_k, args.exclude_superseded, args.provider, args.model, args.source, args.documents,
+                        senders=senders, date_from=date_from, date_to=date_to, query=query)
     for number, step in enumerate(steps, 1):
         print(f"\n=== {number}/{len(steps)} {step['title']} ===", flush=True)
         code = subprocess.call([sys.executable, *step["args"]], cwd=step["folder"], env=env)

@@ -15,6 +15,7 @@ API
   POST /api/runs/<id>/cancel          stop the running stage
   POST /api/runs/<id>/feedback        {rating?: good|bad, issues?: [ids], comment?} -> {feedback} (run must have ended)
   GET  /api/feedback                  {issues: [{id, label}], reports: [newest first]}
+  POST /api/songs/check               {ids: [song ids]} -> {status, songs, message, log} (music MCP server, get_song)
   POST /api/transcribe?language=he    raw audio body -> {text, ...} via local Whisper
   POST /api/speak                     {text, language?} -> whole clip: audio/mpeg (neural voice) or audio/wav (local MMS)
   POST /api/speak/prepare             {text, language?} -> {id, engine}; then
@@ -152,6 +153,11 @@ class Handler(BaseHTTPRequestHandler):
                 if feedback is None:
                     return self.error(404, "Run not found")
                 return self.send_json({"feedback": feedback})
+            if url.path == "/api/songs/check":  # songs still being made: ask the music MCP server again
+                try:
+                    return self.send_json(skills.check_songs(json.loads(raw or b"{}").get("ids")))
+                except RuntimeError as error:
+                    return self.error(502, str(error))
             if url.path == "/api/transcribe":
                 language = parse_qs(url.query).get("language", [""])[0][:5] or None
                 audio = raw

@@ -14,6 +14,10 @@ SCHEMA = {"type": "object", "properties": {"claims": {"type": "array", "items": 
 
 CONVERSATION_NOTE = " The field conversation holds the earlier turns of this chat. Use it only to understand what the question refers to; facts still come only from the supplied sources, with citations."
 
+CHAT_NOTE = (" Some sources are group-chat excerpts: each line of their text is 'Sender [YYYY-MM-DD HH:MM]: message', and"
+             " messages lists the same as {sender, ts (UTC), text}. Attribute every statement to the sender who wrote it,"
+             " never to someone who is only mentioned or quoted.")
+
 FALLBACK_MODELS = {"claude-opus-5-5", "claude-opus-5", "claude-fable-5-1", "claude-sonnet-5-5"}  # דגמים שבהם השרת יכול לעבור לדגם חלופי לאחר סירוב של מסווג בטיחות.
 
 def load_search(path):  # מקבלים נתיב לפלט Retrieval ומחזירים את החוזה לאחר בדיקה.
@@ -53,7 +57,9 @@ def post_json(url, payload, headers, timeout):  # מעטפת HTTP קטנה שנ�
 def generate(context, provider, model, endpoint, timeout, fixture):  # מבקשים תשובה מהמסלול שנבחר ומחזירים גם את משך הבקשה.
     started = time.perf_counter()  # מתחילים מדידה לפני קריאת הקובץ או לפני הפנייה לספק.
     user_text = json.dumps(context, ensure_ascii=False)
-    system = INSTRUCTIONS + (CONVERSATION_NOTE if context.get("conversation") else "")  # ממירים את השאלה והמקורות לטקסט JSON ברור.
+    system = INSTRUCTIONS + (CONVERSATION_NOTE if context.get("conversation") else "")
+    if any(source.get("messages") for source in context.get("sources", [])):  # chat chunks: keep who said what
+        system += CHAT_NOTE  # ממירים את השאלה והמקורות לטקסט JSON ברור.
     if provider == "offline_fixture":  # מסלול offline_fixture מחזיר תשובה מוכנה מראש ללא מודל.
         raw = Path(fixture).read_text(encoding="utf-8")  # התשובה קבועה ואינה מגיבה לשינויים בהקשר; היא אינה מדד לאיכות Grounding.
     elif provider == "ollama":  # מסלול מקומי משתמש בדגם שנבחר בפקודה ואמור להיות מותקן בשרת.

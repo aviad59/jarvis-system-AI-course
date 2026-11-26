@@ -100,7 +100,8 @@ and the card shows the choice (`JARVIS · YOUTUBE SHORTS`, and the reason in the
 | `make a meme about monday meetings`, `תעשה לי מם על ישיבות`, `drake meme: writing tests / shipping on friday` | your notes are searched first (retrieval only), then the memes MCP makes the meme from what they say; the card names the notes used. Give your own captions to skip both; *Meme: use my notes* off = topic only |
 | `מה הצוות אוהב לאכול? תמצא לי שורטס על זה`, `find shorts about what the team likes to eat` | **notes → Shorts**: answer from the notes, turn the answer into a search (`פיצה פיתה`), then the MCP tool |
 | `system check` / `בדיקת מערכות`, `sync the vault` / `סנכרן את הכספת` | system check / vault re-index |
-| `/docs …`, `/shorts …`, `/meme …` | that skill, whatever the words |
+| `make a song about monday meetings`, `תעשה לי שיר על ישיבות`, `a song about cats, style: lo-fi, lyrics: …` | Music MCP (Suno by default; uses your Suno credits) · the local model (*Song: lyrics by*) writes the title, style and lyrics from your notes, and only the topic and the lyrics go to the music service, never the notes. Write your own `lyrics:`, choose *lyrics by: music service* or *instrumental* to skip the notes. The card has a player per song; it waits up to 4 minutes for the songs to be ready. "שיר" alone may be a name (Shir), so a song needs a make verb ("תעשה / תכתוב / תלחין לי שיר") |
+| `/docs …`, `/shorts …`, `/meme …`, `/song …` | that skill, whatever the words |
 
 Anything not clearly about YouTube or the system goes to the documents, so a question about the
 notes that mentions YouTube (`who owns the youtube channel project?`) is answered from the notes.
