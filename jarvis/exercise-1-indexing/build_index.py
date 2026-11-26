@@ -9,6 +9,7 @@ import json  # טוענים כלי עבור קריאה וכתיבה של קבצ�
 import sys  # טוענים כלי עבור דיווח קוד סיום והודעות שגיאה
 import time  # טוענים כלי עבור מדידת משך ההכנה
 from pathlib import Path  # משתמשים בנתיבים שמאפשרים לפתוח ולשמור את קבצי התרגיל
+import chat_parser  # WhatsApp exports: message-aligned chunks
 from index_support import (BASE, REQUIRED, digest, load_documents, load_vault, validate_pieces,  # טוענים את פונקציות העזר הדרושות לשלב הנוכחי
                            resolve_model, embed_texts, fixture_vectors, validate_vectors, VAULT_INCLUDE)  # משלימים את ביטוי הנתונים של build_index תוך שמירה על המבנה המוצג
 
@@ -28,6 +29,12 @@ def prepare(args):  # מכינים קטעי מקור עם metadata לפני יצ
     corpus = "both" if args.vault and not args.no_course_docs else "vault" if args.vault else "course"
     records = []  # שומרים את רשומות הקטעים לשלב הבא
     for document in documents:  # עוברים לפי הסדר על document ומטפלים בכל פריט בנפרד
+        if document.get("kind") == "chat":  # WhatsApp export: whole messages per chunk, names/times kept out of the embedding
+            chat_records = chat_parser.index_records(document, args.max_chars)
+            records.extend(chat_records)
+            print(f"CHAT {document['document_id']}: {sum(len(r['chat']['messages']) for r in chat_records)} messages, "
+                  f"{len(chat_records)} chunks")
+            continue
         splitter = module.split_document_structured if args.structured else module.split_document  # בונוס 1: חלוקה לפי מבנה
         pieces = splitter(document, args.max_chars)  # מכינים את הקטעים שהחלוקה החזירה עבור מסמך אחד
         validate_pieces(document, pieces, args.max_chars)  # משלימים את ביטוי הנתונים של prepare תוך שמירה על המבנה המוצג
@@ -102,7 +109,9 @@ def embed(args):  # מוסיפים embedding לכל קטע ושומרים את �
         "embedding_mode": "offline_fixture" if args.fixture else args.provider,  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
         "model": model, "model_digest": model_digest, "dimensions": dimension,  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
         "document_format": document_format, "document_count": prepared["document_count"],  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
-        "chunk_count": len(records), "chunking": prepared["chunking"], "corpus": prepared.get("corpus", "course")}, "records": records}  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
+        "chunk_count": sum(1 for r in records if r.get("kind") != "chat"),  # note/document chunks
+        "chat_chunk_count": sum(1 for r in records if r.get("kind") == "chat"),  # chat chunks (kept by the chat sync in MongoDB)
+        "chunking": prepared["chunking"], "corpus": prepared.get("corpus", "course")}, "records": records}  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
     output = Path(args.output or ("build/offline-index.json" if args.fixture else "build/index.json"))  # מכינים את תוצר השלב לפני שמירתו
     if args.fixture and output.name == "index.json":  # מפרידים בין מספרי בדיקה מקומיים לבין פלט מודל אמיתי
         raise ValueError("Use a distinct offline filename, such as build/offline-index.json")  # עוצרים עם הסבר ברור כאשר החוזה או הקלט אינם תקינים

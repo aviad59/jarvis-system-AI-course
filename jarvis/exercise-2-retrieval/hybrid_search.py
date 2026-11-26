@@ -12,7 +12,9 @@ import argparse  # command-line options
 import sys  # exit codes and error output
 from bonus_ranking import BM25, reciprocal_rank_fusion  # the bonus 1 building blocks
 from retrieval import cosine_similarity, select_top_k  # the core semantic ranking functions
-from search import atlas_connection, read_index_db, read_index_file, query_embedding, retrieval_info, write_output
+import chat_filters  # sender / time filters for chat chunks
+from search import (add_filter_arguments, atlas_connection, chat_fields, read_index_db, read_index_file, query_embedding,
+                    retrieval_info, write_output)
 
 DEMO_QUESTIONS = (  # README step 4: an exact code, a paraphrase, and a question that needs several documents
     "HTTP 401",
@@ -21,12 +23,26 @@ DEMO_QUESTIONS = (  # README step 4: an exact code, a paraphrase, and a question
 )
 
 
-def load_records(args):  # the same chunks and vectors that search.py ranks
+def load_records(args, filters=None):  # the same chunks and vectors that search.py ranks -> (manifest, records, info)
+    """With sender/time filters, MongoDB selects the candidates (both rankers then see only those);
+    no match -> the filters are relaxed in the same order as search.py."""
+    if chat_filters.active(filters) and args.source == "file":
+        raise ValueError("Sender/time filters need MongoDB: use --source db (Vectors from: mongodb)")
     if args.source == "file":
-        return read_index_file(args.index)
+        return (*read_index_file(args.index), {})
     client, settings = atlas_connection(args)
     try:
-        return read_index_db(client[settings["db"]], settings["collection"])
+        db = client[settings["db"]]
+        if not chat_filters.active(filters):
+            return (*read_index_db(db, settings["collection"]), {})
+        for relaxed, attempt in chat_filters.relaxations(filters):
+            manifest, records = read_index_db(db, settings["collection"], chat_filters.mongo_filter(attempt) or {})
+            if records:
+                break
+        if relaxed:
+            print(f"RELAXED: no chunk matched the filters; dropped {', '.join(relaxed)}")
+        return manifest, records, {"filters": chat_filters.describe(filters),
+                                   "applied_filters": chat_filters.describe(attempt), "relaxed": relaxed}
     finally:
         client.close()
 
@@ -86,15 +102,17 @@ def main():
     parser.add_argument("--db")
     parser.add_argument("--collection")
     parser.add_argument("--ask-uri", action="store_true")
+    add_filter_arguments(parser)
     args = parser.parse_args()
     args.vector_index = None  # atlas_connection reads it; hybrid search ranks locally
     if args.top_k <= 0 or args.pool < args.top_k:
         parser.error("top-k must be positive and --pool must be at least --top-k")
     try:
-        manifest, records = load_records(args)
+        filters = chat_filters.normalize(args.senders, args.date_from, args.date_to, chat_filters.chat_timezone(args.timezone))
+        manifest, records, filter_info = load_records(args, filters)
         bm25 = BM25(records, args.k1, args.b)  # built once, reused for every question
         by_id = {record["chunk_id"]: record for record in records}
-        for question in (DEMO_QUESTIONS if args.demo else [args.question.strip()]):
+        for question in (DEMO_QUESTIONS if args.demo else [(args.query or "").strip() or args.question.strip()]):
             if not question:
                 raise ValueError("Question must contain text")
             ranks = hybrid(question, manifest, records, bm25, args)
@@ -107,9 +125,9 @@ def main():
             results.append({"rank": rank, "chunk_id": record["chunk_id"], "text": record["text"], "metadata": record["metadata"],
                              "score": item["score"],
                              "semantic_score": ranks["semantic_scores"].get(record["chunk_id"]),
-                             "bm25_score": ranks["bm25_scores"].get(record["chunk_id"], 0.0)})
+                             "bm25_score": ranks["bm25_scores"].get(record["chunk_id"], 0.0), **chat_fields(record)})
         info = retrieval_info(args, "hybrid_rrf(cosine+bm25)", args.source if args.source == "file" else "mongodb", len(records))
-        info.update({"pool": args.pool, "rrf_constant": args.rrf_constant, "bm25": {"k1": args.k1, "b": args.b}})
+        info.update({"pool": args.pool, "rrf_constant": args.rrf_constant, "bm25": {"k1": args.k1, "b": args.b}, **filter_info})
         print()
         write_output(args, question, manifest, results, info)
     except Exception as error:
