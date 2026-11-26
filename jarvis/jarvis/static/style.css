@@ -339,6 +339,22 @@ body[data-state="error"] .core { filter: drop-shadow(0 0 16px rgba(255, 79, 109,
 .ev-bar i { display: block; height: 100%; background: linear-gradient(90deg, var(--cyan-dim), var(--cyan)); box-shadow: var(--glow); }
 .ev-meta { font: 500 10.5px var(--font-mono); color: var(--text-faint); display: flex; gap: 8px; flex-wrap: wrap; }
 .ev-meta .superseded { color: var(--warn); }
+.ev[role="button"] { cursor: pointer; }
+.ev[role="button"]:hover, .ev.open { border-color: var(--line-strong); background: rgba(84, 214, 255, 0.08); }
+.ev:focus-visible { outline: 1px solid var(--cyan); outline-offset: 2px; }
+
+/* the chunk popup opened from an Evidence item */
+.chunk-pop {
+  position: fixed; z-index: 15; width: min(420px, calc(100vw - 16px)); max-height: min(60vh, 460px);
+  display: flex; flex-direction: column; gap: 8px; padding: 12px 14px;
+  background: var(--panel-solid); border: 1px solid var(--line-strong); border-left: 3px solid var(--cyan);
+  box-shadow: var(--glow), 0 14px 34px rgba(0, 0, 0, 0.65);
+}
+.chunk-pop-head { display: flex; justify-content: space-between; align-items: baseline; gap: 10px; font-size: 14px; letter-spacing: 0.04em; }
+.chunk-close { flex: none; background: none; border: 0; padding: 0 2px; color: var(--text-dim); cursor: pointer; font-size: 15px; line-height: 1; }
+.chunk-close:hover, .chunk-close:focus-visible { color: var(--cyan-bright); }
+.chunk-pop-text { overflow: auto; white-space: pre-wrap; font: 14px/1.55 var(--font-body); color: var(--text); }
+.chunk-pop .src-meta { font: 500 11px var(--font-mono); color: var(--text-faint); direction: ltr; text-align: left; }
 
 .log {
   flex: 1; min-height: 120px; margin: 0; overflow: auto; padding: 10px; white-space: pre-wrap; overflow-wrap: anywhere;
