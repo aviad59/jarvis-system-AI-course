@@ -292,7 +292,10 @@ const HANDLERS = {
   retrieval(e) {
     const top = Math.max(...e.results.map((r) => r.score), 1e-9);
     els.evidenceMeta.textContent = `${e.method} · ${e.results.length}/${e.candidates ?? "?"}`;
-    els.evidence.replaceChildren(...e.results.map((r) => el("div", { class: "ev", title: r.source },
+    closeChunk();
+    els.evidence.replaceChildren(...e.results.map((r) => el("div", { class: "ev", title: "Click to read this chunk", tabindex: "0",
+        role: "button", "aria-haspopup": "dialog", onclick: (ev) => openChunk(ev.currentTarget, r),
+        onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openChunk(ev.currentTarget, r); } } },
       el("div", { class: "ev-top" }, el("span", { class: "ev-doc" }, `#${r.rank} ${r.document_id}`, el("em", { text: "v" + r.version })),
         el("span", { class: "ev-score", text: r.score.toFixed(4) })),
       el("div", { class: "ev-bar" }, el("i", { style: `width:${Math.max(4, (r.score / top) * 100)}%` })),
@@ -623,7 +626,47 @@ function toggleSource(item, chip, src, id) {
   item.append(el("div", { class: "source", "data-id": id, dir: "auto" },
     src ? src.text : "This chunk was not sent to the model — the citation is invalid.", el("span", { class: "src-meta", text: meta })));
 }
+/* ---------------- evidence: chunk popup ---------------- */
+let chunkPop = null;   // { node, anchor } of the open popup
+function closeChunk() {
+  if (!chunkPop) return;
+  chunkPop.anchor.classList.remove("open");
+  chunkPop.node.remove();
+  chunkPop = null;
+}
+function openChunk(anchor, r) {   // a small popup next to the Evidence item, with the chunk's text
+  const same = chunkPop?.anchor === anchor;
+  closeChunk();
+  if (same) return;   // a second click on the same item closes it
+  const meta = [r.source, `${r.document_id} v${r.version}`, r.meeting_date, r.project_id, r.status,
+                `score ${r.score.toFixed(4)}`, r.chunk_id].filter(Boolean).join(" · ");
+  const node = el("div", { class: "chunk-pop", role: "dialog", "aria-label": `Chunk #${r.rank}` },
+    el("div", { class: "chunk-pop-head" },
+      el("strong", { dir: "auto", text: `#${r.rank} ${r.title || r.document_id}` }),
+      el("button", { type: "button", class: "chunk-close", title: "Close (Esc)", "aria-label": "Close", text: "✕", onclick: closeChunk })),
+    el("div", { class: "chunk-pop-text", dir: "auto", text: r.text || "The chunk text was not saved with this run." }),
+    el("span", { class: "src-meta", text: meta }));
+  document.body.append(node);
+  anchor.classList.add("open");
+  chunkPop = { node, anchor };
+  const box = anchor.getBoundingClientRect(), w = node.offsetWidth, h = node.offsetHeight, gap = 10;
+  let left = box.left - w - gap, top = box.top;      // to the left of the item (Evidence is on the right)
+  if (left < 8) { left = Math.min(Math.max(8, box.left), innerWidth - w - 8); top = box.bottom + gap; }   // no room: below it
+  node.style.left = `${left}px`;
+  node.style.top = `${Math.max(8, Math.min(top, innerHeight - h - 8))}px`;
+  node.querySelector(".chunk-close").focus({ preventScroll: true });
+}
+document.addEventListener("click", (e) => {
+  if (chunkPop && !chunkPop.node.contains(e.target) && !chunkPop.anchor.contains(e.target)) closeChunk();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && chunkPop) { const anchor = chunkPop.anchor; closeChunk(); anchor.focus(); }
+});
+document.addEventListener("scroll", (e) => { if (chunkPop && !chunkPop.node.contains(e.target)) closeChunk(); }, true);   // any panel scrolls
+addEventListener("resize", closeChunk);
+
 function resetTelemetry() {
+  closeChunk();
   els.stages.replaceChildren(el("li", { class: "muted", text: "Starting…" }));
   els.evidence.replaceChildren(el("p", { class: "muted", text: "Retrieved chunks appear here." }));
   els.evidenceMeta.textContent = "";

@@ -513,6 +513,29 @@ class JarvisServer(unittest.TestCase):
         self.assertNotIn("--source", atlas["retrieve"])
         self.assertEqual(self.json("/api/runs", {"skill": "rag", "request": {"question": "x", "source": "s3"}})[0], 400)
 
+    def test_evidence_carries_the_chunk_text(self):  # clicking an Evidence item shows the chunk in a popup
+        import rag
+        result = {"rank": 1, "chunk_id": "c1", "score": 0.9, "text": "הצוות אוהב פיצה.\nSecond line.",
+                  "metadata": {"document_id": "D1", "version": 1, "status": "active", "source": "Meetings/a.md"}}
+        events = []
+
+        class Run:
+            def emit(self, kind, **data): events.append((kind, data))
+
+        saved = rag.SEARCH_RESULTS
+        with tempfile.TemporaryDirectory() as tmp:
+            rag.SEARCH_RESULTS = Path(tmp) / "search-results.json"
+            rag.SEARCH_RESULTS.write_text(json.dumps({"results": [result], "retrieval": {"method": "cosine_similarity"}}),
+                                          encoding="utf-8")
+            try:
+                skills.RagSkill.emit_retrieval(Run())
+            finally:
+                rag.SEARCH_RESULTS = saved
+        kind, data = events[0]
+        self.assertEqual(kind, "retrieval")
+        self.assertEqual(data["results"][0]["text"], result["text"])
+        self.assertEqual(data["results"][0]["source"], "Meetings/a.md")
+
     def test_vault_loader_keeps_path_date_and_project(self):  # Obsidian notes: only Projects + Meetings, metadata kept
         import rag
         sys.path.insert(0, str(rag.EX1))

@@ -150,7 +150,8 @@ class RagSkill(Skill):
                  "document_id": r["metadata"].get("document_id"), "version": r["metadata"].get("version"),
                  "status": r["metadata"].get("status"), "title": r["metadata"].get("title"),
                  "source": r["metadata"].get("source"), "meeting_date": r["metadata"].get("meeting_date"),
-                 "project_id": r["metadata"].get("project_id")} for r in data["results"]]
+                 "project_id": r["metadata"].get("project_id"),
+                 "text": r.get("text", "")} for r in data["results"]]  # shown when an Evidence item is clicked
         run.emit("retrieval", method=data["retrieval"]["method"], candidates=data["retrieval"].get("candidate_count"),
                  results=rows)
 
