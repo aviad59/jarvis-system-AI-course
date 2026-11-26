@@ -249,7 +249,7 @@ def make_server(host, port, data_dir=None):
 
 def warm_up():  # load Whisper and the TTS voices once, in the background; failures only mean a slower first use
     whisper = lambda: [voice.model(name) for name in {voice.MODEL_NAME, voice.model_for("he")}] if voice.available() else None
-    tasks = [("Speech", tts.warm_up_speech), ("Whisper", whisper),
+    tasks = [("Speech", tts.warm_up_speech), ("MCP tools", skills.warm_up_mcp_tools), ("Whisper", whisper),
              ("Local voice (offline fallback)", lambda: tts.warm_up() if tts.available() else None)]  # last: least urgent
     for name, task in tasks:
         try:

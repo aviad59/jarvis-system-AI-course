@@ -50,6 +50,8 @@ class JarvisServer(unittest.TestCase):
     @classmethod
     def setUpClass(cls):
         skills.SKILLS["fake"] = FakeSkill()
+        cls.router = skills.ROUTER
+        skills.ROUTER = "rules"  # the tests below check the patterns; model routing has its own test (fake model)
         cls.tmp = tempfile.TemporaryDirectory()
         cls.server = server.make_server("127.0.0.1", 0, cls.tmp.name)  # port 0 = any free port
         cls.base = f"http://127.0.0.1:{cls.server.server_address[1]}"
@@ -60,6 +62,7 @@ class JarvisServer(unittest.TestCase):
         cls.server.shutdown()
         cls.server.server_close()
         skills.SKILLS.pop("fake", None)
+        skills.ROUTER = cls.router
         cls.tmp.cleanup()
 
     def request(self, path, body=None, method=None, timeout=30):
@@ -322,6 +325,69 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual(skills.SKILLS["jarvis"].stages(clean)[1:], skills.SKILLS["rag"].stages(clean["route"]["request"]))
         self.assertEqual(self.json("/api/runs", {"skill": "jarvis", "request": {"question": "find shorts"}})[0], 400)
         self.assertEqual(self.json("/api/runs", {"skill": "jarvis", "request": {"question": "  "}})[0], 400)
+
+    def test_model_picks_the_tool(self):  # "Route with: model": the answer model is stubbed, no network
+        import router
+        jarvis = skills.SKILLS["jarvis"]
+        for text, skill in (("system check", "status"), ("@MrBeast", "shorts"), ("/meme cats", "meme"),
+                            ("https://youtu.be/dQw4w9WgXcQ", "shorts")):  # sure cases: no model call
+            self.assertEqual(jarvis.validate({"question": text, "router": "model"})["route"]["skill"], skill, text)
+        pending = jarvis.validate({"question": "find 4 shorts about cats", "router": "model"})
+        self.assertEqual((pending["route"]["skill"], jarvis.stages(pending)), ("pending", [{"id": "route", "title": "Understand request"}]))
+        # the model's choice -> the same routes the rules build
+        self.assertEqual(router.from_tool("notes_then_shorts", "", "find a video about it").options.get("follow_up"), True)
+        self.assertEqual(router.from_tool("notes_then_shorts", "מה הצוות אוהב לאכול?", "x").question, "מה הצוות אוהב לאכול?")
+        self.assertEqual(router.from_tool("make_meme", "cats", "make a meme about cats").question, "make a meme about cats")
+        self.assertEqual(router.from_tool("ask_notes", "rewritten", "מה הוחלט?").question, "מה הוחלט?")  # as asked
+        with self.assertRaises(ValueError):
+            router.from_tool("delete_everything", "", "x")
+        prompt = router.tool_prompt("and him?", [{"question": "who likes pizza?", "answer": "Idan"}],
+                                    lambda server, tool: "LIVE " + tool if server == "memes" else None)
+        self.assertIn("Request: and him?", prompt)
+        self.assertIn("Previous answer: Idan", prompt)
+        self.assertIn("make_meme(input: what the meme is about): LIVE generate_meme", prompt)  # the MCP server's own words
+        self.assertIn("Search YouTube Shorts by keyword", prompt)  # no live text: the catalog's
+
+        calls, replies = [], []
+
+        class FakeShorts(skills.ShortsSkill):
+            def run(self, request, run):
+                calls.append((request["question"], request["mode"], request["limit"]))
+                run.emit("stage_start", stage="mcp", title="MCP · youtube-shorts")
+                run.emit("stage_end", stage="mcp", status="ok", seconds=0)
+                run.emit("posts", tool="search_youtube_shorts", query=request["question"], posts=[])
+
+        def fake_ask_json(prompt, schema, provider, model, timeout=90, strict=True):
+            self.assertEqual(schema["properties"]["tool"]["enum"], router.TOOL_NAMES)
+            reply = replies.pop(0)
+            if isinstance(reply, Exception):
+                raise reply
+            return reply
+        saved = skills.SKILLS["shorts"], skills.ask_json
+        skills.SKILLS["shorts"], skills.ask_json = FakeShorts(), fake_ask_json
+        try:
+            runs = []
+            for reply, text in (({"tool": "search_youtube_shorts", "input": "cute cats"}, "find 4 shorts about cats"),
+                                (OSError("Ollama is off"), "find 4 shorts about cats"),  # the rules take over
+                                ({"tool": "notes_then_shorts", "input": ""}, "find shorts about it")):  # nothing before "it"
+                replies.append(reply)
+                self.wait_idle()
+                code, data = self.json("/api/runs", {"skill": "jarvis", "request": {"question": text, "router": "model"}})
+                self.assertEqual(code, 202, text)
+                runs.append(self.events(data["run_id"]))
+        finally:
+            skills.SKILLS["shorts"], skills.ask_json = saved
+        model_run, fallback_run, rejected = runs
+        self.assertEqual(calls, [("cute cats", "search", 4), ("cats", "search", 4)])
+        self.assertEqual([s["id"] for s in model_run[0]["stages"]], ["route"])  # known before the model answers
+        self.assertEqual([s["id"] for s in next(e for e in model_run if e["type"] == "stages")["stages"]], ["route", "mcp"])
+        self.assertIn("search_youtube_shorts", next(e for e in model_run if e["type"] == "route")["reason"])
+        ends = {e["stage"]: e["status"] for run in (model_run, fallback_run) for e in run if e["type"] == "stage_end"}
+        self.assertEqual(next(e["status"] for e in fallback_run if e["type"] == "stage_end" and e["stage"] == "route"), "warning")
+        self.assertEqual(ends["mcp"], "ok")
+        self.assertTrue(any("used the rules" in e.get("line", "") for e in fallback_run))
+        self.assertEqual(rejected[-1]["status"], "error")
+        self.assertIn("About what?", next(e for e in rejected if e["type"] == "error")["message"])
 
     def test_meme_requests_route_to_the_memes_skill(self):
         import router

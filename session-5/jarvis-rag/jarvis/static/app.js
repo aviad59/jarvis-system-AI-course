@@ -260,6 +260,12 @@ const HANDLERS = {
     if (state.live) setState("thinking", "Starting");
     logLine(`■ ${e.skill.toUpperCase()} run ${e.run_id}`, "l-stage");
   },
+  stages(e) {   // Ask Jarvis: the model picked a tool, so the full pipeline is known now; finished stages keep their state
+    const nodes = e.stages.map((s) => $("stage-" + s.id) || el("li", { class: "stage", id: "stage-" + s.id },
+      el("span", { class: "node" }, el("b")), el("span", { class: "name", text: s.title }), el("span", { class: "time", text: "—" })));
+    nodes.forEach((node, i) => { node.querySelector(".node b").textContent = String(i + 1); });
+    els.stages.replaceChildren(...nodes);
+  },
   stage_start(e) {
     const node = $("stage-" + e.stage);
     node?.classList.add("active");

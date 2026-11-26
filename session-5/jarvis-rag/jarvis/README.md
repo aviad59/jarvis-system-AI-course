@@ -72,7 +72,21 @@ and the card shows the choice (`JARVIS · YOUTUBE SHORTS`, and the reason in the
 
 Anything not clearly about YouTube or the system goes to the documents, so a question about the
 notes that mentions YouTube (`who owns the youtube channel project?`) is answered from the notes.
-Words such as "videos" alone need a verb (`show me cat videos`); add `/shorts` when in doubt.
+Add `/shorts` when in doubt.
+
+**Who decides: the rules or the model** (option *Route with*; default from `JARVIS_ROUTER=rules|model`):
+- `rules` (default): `router.route()` only, plain patterns: instant and offline, but every new skill needs new patterns.
+- `model`: `/commands`, YouTube links, a bare `@handle`, `system check` and `sync the vault` are sure, so they
+  go straight to their skill. For everything else the answer model (*Answer with*: Ollama `gemma3:4b` or Claude)
+  gets the list of tools (`router.TOOLS`) and picks one tool and its input. This happens in the *Understand request*
+  stage, so the rest of the pipeline appears once the choice is made. The descriptions of the MCP tools come
+  live from each server's `list_tools()` (read once when Jarvis starts). If the model fails (Ollama off, a bad
+  reply), the rules decide and the stage turns yellow.
+  Measured with `gemma3:4b` on a CPU (no GPU): ~17 s per request and 29 of 41 test phrases right (the rules: 40);
+  it mostly sends plain questions that mention YouTube, memes or the team to notes → Shorts. Worth it with a GPU or Claude.
+
+The router calls Ollama without a JSON `format`. Any `format` turns off Ollama's prompt cache, so the
+fixed tool list (~500 tokens) would be read again on every call; the reply is checked in `router.from_tool` instead.
 
 **Conversation:** the console sends the last 6 questions and answers of this page with each request, so
 follow-ups work. A follow-up such as `והראל?` or `what about Harel?` is first rewritten into a full question
@@ -159,7 +173,8 @@ browser (static/)  --POST /api/runs-->  server.py --> RunManager (runs.py) --> S
 ```
 
 * `skills.py` – what Jarvis can do. One class per skill; `JarvisSkill` runs whichever skill the router picks.
-* `router.py` – which skill a free-form request belongs to (plain patterns: instant, offline).
+* `router.py` – which skill a free-form request belongs to: the tool list and prompt for the model
+  (`TOOLS`, `tool_prompt`, `from_tool`), the sure cases (`sure_route`) and the plain-pattern rules (`route`).
 * `runs.py` – a run is an ordered list of events; live viewers follow it, finished runs are saved.
 * `status.py` – health checks (never returns URIs or keys).
 * `voice.py` – local Whisper speech-to-text.

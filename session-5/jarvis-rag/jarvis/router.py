@@ -11,9 +11,15 @@
   route("system check") / route("בדיקת מערכות")      -> status
   route("/shorts cats") / route("/docs ...")         -> force a skill
 
-The rules are plain patterns on purpose: instant, offline, predictable, and the console can show
-the right pipeline stages before the run starts. Anything not clearly about YouTube or the system
-goes to the documents, so a question about the notes is never sent to YouTube by accident.
+Two ways to route (the "Route with" option in Ask Jarvis; JARVIS_ROUTER sets the default):
+  rules  (default) - route(): plain patterns only. Instant, offline, predictable; a new skill means new patterns.
+  model            - only the sure cases use patterns (sure_route: /commands, YouTube links, a bare @handle,
+                     "system check", "sync the vault"). Everything else goes to the answer model with the list of
+                     TOOLS: it picks one tool and its input (tool_prompt -> from_tool). If the model fails, the rules decide.
+                     gemma3:4b on a CPU: ~17 s and ~70% right on the test phrases, so it is not the default.
+
+With the rules, anything not clearly about YouTube or the system goes to the documents, so a question about
+the notes is never sent to YouTube by accident. The model gets the same rule in its prompt.
 """
 import re
 from dataclasses import dataclass, field
@@ -155,3 +161,90 @@ def route(text):
             return Route("shorts", query, {"mode": "search", **extra}, f"YouTube request → search Shorts for “{query}”")
         return Route("shorts", "", {"mode": "search", **extra}, "YouTube request without a topic")
     return Route("rag", text, {}, "question → your documents")
+
+
+# -- model routing -----------------------------------------------------------------------------------------------
+def sure_route(text):  # requests the patterns can't get wrong; None = let the model decide
+    text = (text or "").strip()
+    forced = re.match(r"^/(\w+)", text)
+    if (forced and forced.group(1).lower() in FORCE) or STATUS.match(text) or SYNC.match(text) \
+            or YOUTUBE_URL.search(text) or HANDLE.fullmatch(text):
+        return route(text)
+    return None
+
+
+# The tools the model can pick from. "server"/"tool" name the MCP tool behind a choice: describe() can replace the
+# description with the live one from the server's list_tools(), so the model reads what the server itself says.
+TOOLS = [
+    {"name": "ask_notes", "input": "the request, as asked",
+     "description": "Answer from the user's notes and documents. The default, for any question."},
+    {"name": "search_youtube_shorts", "server": "youtube-shorts", "tool": "search_youtube_shorts",
+     "input": "the search words only",
+     "description": "Search YouTube Shorts by keyword or hashtag."},
+    {"name": "get_youtube_shorts", "server": "youtube-shorts", "tool": "get_youtube_shorts",
+     "input": "the channel, e.g. @MrBeast",
+     "description": "Get the latest YouTube Shorts of a channel."},
+    {"name": "notes_then_shorts", "input": "the question for the notes, or empty for the previous answer",
+     "description": "Answer from the notes, then search YouTube Shorts about the answer."},
+    {"name": "make_meme", "server": "memes", "tool": "generate_meme", "input": "what the meme is about",
+     "description": "Make a meme. Also for jokes ('tell me a joke', 'תצחיק אותי')."},
+    {"name": "system_check", "input": "empty", "description": "Check Jarvis's systems."},
+    {"name": "sync_vault", "input": "empty", "description": "Re-index the Obsidian vault now."},
+]
+TOOL_NAMES = [t["name"] for t in TOOLS]
+TOOL_SCHEMA = {"type": "object", "additionalProperties": False, "required": ["tool", "input"],
+               "properties": {"tool": {"type": "string", "enum": TOOL_NAMES}, "input": {"type": "string"}}}
+TOOL_PROMPT = """Pick the ONE tool for the request to Jarvis, and its input.
+
+{tools}
+
+Rules: a question is ask_notes, even if it mentions YouTube, videos, memes or jokes ("who owns the youtube project?",
+"מה הוחלט על המם?"). Videos about the team, a person or "it / that" -> notes_then_shorts. "מים" is water, a meme only
+after a make verb ("תעשה לי מים על..."). Keep the request's language.
+
+find me 5 youtube shorts about cooking -> {{"tool": "search_youtube_shorts", "input": "cooking"}}
+מה הצוות אוהב לאכול? תמצא לי שורטס על זה -> {{"tool": "notes_then_shorts", "input": "מה הצוות אוהב לאכול?"}}
+תספר לי בדיחה על מתכנתים -> {{"tool": "make_meme", "input": "מתכנתים"}}
+מה הוחלט בישיבת הצוות? -> {{"tool": "ask_notes", "input": "מה הוחלט בישיבת הצוות?"}}
+
+{conversation}Request: {request}
+JSON:"""
+
+
+def describe(tool, live=None):  # live(server, tool) -> description from the MCP server, or None
+    text = live(tool["server"], tool["tool"]) if live and tool.get("server") else None
+    return " ".join(str(text or tool["description"]).split())[:300]
+
+
+def tool_prompt(text, history=(), live=None):
+    tools = "\n".join(f"- {t['name']}(input: {t['input']}): {describe(t, live)}" for t in TOOLS)
+    last = list(history)[-1:]  # the previous turn, so "about it" has something to point at
+    conversation = "".join(f"Previous question: {t['question'][:300]}\nPrevious answer: {t['answer'][:300]}\n\n" for t in last)
+    return TOOL_PROMPT.format(tools=tools, conversation=conversation, request=text)
+
+
+def from_tool(name, given, text, by="model"):  # the model's choice -> the same Route the rules would build
+    given = " ".join(str(given or "").split())[:200]
+    limit = count(text)
+    extra = {"limit": limit} if limit else {}
+    why = f"{by} → {name}" + (f" “{given}”" if given else "")
+    if name == "ask_notes":
+        return Route("rag", text, {}, why)  # as asked: a follow-up is rewritten by the documents skill itself
+    if name == "search_youtube_shorts":
+        query = shorts_query(given) or shorts_query(text)
+        return Route("shorts", query, {"mode": "search", **extra}, why)
+    if name == "get_youtube_shorts":
+        channel = given.split()[0] if given else ""
+        mode = "channel" if channel else "search"
+        return Route("shorts", channel or shorts_query(text), {"mode": mode, **extra}, why)
+    if name == "notes_then_shorts":
+        if not given or PRONOUN.sub(" ", given).strip(" ?!.,") == "":
+            return Route("combo", "", {"mode": "search", "follow_up": True, **extra}, why)
+        return Route("combo", given, {"mode": "search", **extra}, why)
+    if name == "make_meme":
+        return Route("meme", text, {}, why)  # as asked: the memes skill reads templates and captions from the words
+    if name == "system_check":
+        return Route("status", "", {}, why)
+    if name == "sync_vault":
+        return Route("vault_sync", "", {}, why)
+    raise ValueError(f"unknown tool {name!r}")

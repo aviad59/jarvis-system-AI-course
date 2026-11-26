@@ -277,7 +277,10 @@ QUERY_PROMPT = ("Turn an answer into a YouTube search.\n\n"
                 "video). If the answer names nothing specific, return an empty query. Reply as JSON: {{\"query\": \"...\"}}")
 
 
-def ask_json(prompt, schema, provider, model, timeout=90):  # one small structured call to the answer model
+def ask_json(prompt, schema, provider, model, timeout=90, strict=True):  # one small structured call to the answer model
+    """strict=False (Ollama only): no "format" in the request, the JSON is read from the reply text. Any format turns off
+    Ollama's prompt cache, so a long fixed prompt (the router's tool list) is read again on every call: on a CPU that
+    is ~10 s for 700 tokens. The caller must check the values itself."""
     if provider == "anthropic":
         url = "https://api.anthropic.com/v1/messages"
         headers = {"x-api-key": rag.find_anthropic_key()[0] or "", "anthropic-version": "2026-10-21"}
@@ -285,8 +288,10 @@ def ask_json(prompt, schema, provider, model, timeout=90):  # one small structur
                    "output_config": {"format": {"type": "json_schema", "schema": schema}}}
     else:
         url, headers = "http://localhost:11434/api/chat", {}
-        payload = {"model": model, "messages": [{"role": "user", "content": prompt}], "format": schema,
-                   "stream": False, "options": {"temperature": 0}}
+        payload = {"model": model, "messages": [{"role": "user", "content": prompt}],
+                   "stream": False, "options": {"temperature": 0, **({} if strict else {"num_predict": 80})}}
+        if strict:
+            payload["format"] = schema
     body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
     call = urllib.request.Request(url, data=body, headers={"Content-Type": "application/json", **headers}, method="POST")
     with urllib.request.urlopen(call, timeout=timeout) as response:
@@ -295,6 +300,9 @@ def ask_json(prompt, schema, provider, model, timeout=90):  # one small structur
         text = "".join(b.get("text", "") for b in reply.get("content", []) if b.get("type") == "text")
     else:
         text = reply.get("message", {}).get("content", "")
+    if not strict:  # free text: the first {...} in the reply (models sometimes wrap it in ```json fences)
+        found = re.search(r"\{.*\}", text, re.S)
+        text = found.group(0) if found else text
     return json.loads(text)
 
 
@@ -658,18 +666,43 @@ def notes_question_about(topic):  # "עומר ברנשטיין" -> "מה כתו�
     return f"מה כתוב בפתקים על {topic}?" if hebrew else f"What do the notes say about {topic}?"
 
 
-class JarvisSkill(Skill):  # one input for everything: router.py picks the skill, then that skill runs as usual
+ROUTER = os.environ.get("JARVIS_ROUTER", "rules")  # default of "Route with": rules | model (gemma3:4b on a CPU: ~17 s, ~70% right)
+ROUTE_TIMEOUT = 60  # seconds; the first call may load the model
+
+
+_mcp_tools = {}  # server -> {tool: description}, filled once in the background at startup (server.py warm_up)
+
+
+def warm_up_mcp_tools():  # start each MCP server once and keep what its tools say about themselves, for the router
+    import mcp_client  # the shared MCP client: one long-lived process per server
+    found = []
+    for server in mcp_client.servers():
+        try:
+            _mcp_tools[server] = {t["name"]: t["description"] for t in mcp_client.list_tools(server)}
+            found.append(f"{server} ({len(_mcp_tools[server])} tools)")
+        except Exception as error:  # e.g. its venv isn't set up: the router uses its own text for that server
+            found.append(f"{server} unavailable ({error})")
+    return ", ".join(found)
+
+
+def mcp_description(server, tool):  # the live description of an MCP tool; None = router.TOOLS text (never waits)
+    return _mcp_tools.get(server, {}).get(tool)
+
+
+class JarvisSkill(Skill):  # one input for everything: the model (or router.py's rules) picks the skill, then it runs as usual
     name, title = "jarvis", "Ask Jarvis"
     description = ("Ask anything: questions go to your documents, YouTube requests (\"find shorts about cooking\", "
                    "@channel, a YouTube link) go to the youtube-shorts MCP server, \"make a meme about ...\" goes to the memes "
-                   "MCP server, \"system check\" checks the systems. Start with /docs, /shorts or /meme to choose yourself.")
+                   "MCP server, \"system check\" checks the systems. The answer model picks the tool (or the fixed rules: "
+                   "Route with). Start with /docs, /shorts or /meme to choose yourself.")
     needs_question = True
 
     @property
     def options(self):  # the documents options plus the Shorts ones; each target reads only its own keys
+        routing = [{"key": "router", "label": "Route with", "type": "select", "choices": ["model", "rules"], "default": ROUTER}]
         shorts = [dict(o, label="Shorts: " + o["label"].lower()) for o in SKILLS["shorts"].options if o["key"] != "mode"]
         memes = [dict(o, label="Meme: " + o["label"].lower()) for o in SKILLS["meme"].options]
-        return SKILLS["rag"].options + shorts + memes
+        return routing + SKILLS["rag"].options + shorts + memes
 
     def validate(self, request):
         clean = super().validate(request)
@@ -679,7 +712,23 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
         if len(question) > MAX_QUESTION:
             raise ValueError(f"Request is longer than {MAX_QUESTION} characters")
         history = clean_history(request.get("history"))
-        target = router.route(question)
+        target = router.route(question) if clean["router"] == "rules" else router.sure_route(question)
+        if target is None:  # the model decides when the run starts ("Understand request"); then plan() as below
+            return {**clean, "question": question, "history": history,
+                    "route": {"skill": "pending", "title": "Understand request", "reason": "the model picks the tool"}}
+        return self.plan(clean, question, history, target)
+
+    def pick(self, request):  # ask the model which tool; the rules decide if it fails. -> (Route, problem or None)
+        provider = request["provider"]
+        model = request["model"] or rag.DEFAULT_MODELS[provider]
+        try:
+            choice = ask_json(router.tool_prompt(request["question"], request["history"], mcp_description),
+                              router.TOOL_SCHEMA, provider, model, timeout=ROUTE_TIMEOUT, strict=False)
+            return router.from_tool(choice.get("tool"), choice.get("input"), request["question"], f"{provider} · {model}"), None
+        except Exception as error:  # Ollama off, no key, a bad reply: the patterns still work offline
+            return router.route(request["question"]), f"model router failed ({type(error).__name__}: {error}), used the rules"
+
+    def plan(self, clean, question, history, target):  # a Route -> the validated request of the skill(s) it runs
         mentioned = (vault_mentions(target.question) if target.skill == "shorts" and target.options.get("mode") == "search"
                      and not target.reason.startswith("/") else [])  # /shorts always means YouTube only
         if mentioned:  # "find shorts about Idan": Idan is in the notes -> what do the notes say about him, then YouTube
@@ -701,11 +750,13 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
             raise ValueError("What should I look for on YouTube? e.g. \"find shorts about cooking\" or \"@MrBeast\"")
         skill = SKILLS[target.skill]
         inner = skill.validate({**clean, **target.options, "question": target.question, "history": history})  # rejects bad input up front
-        return {**clean, "question": question,
+        return {**clean, "question": question, "history": history,
                 "route": {"skill": target.skill, "reason": target.reason, "title": skill.title, "request": inner}}
 
     def stages(self, request):
         target = request["route"]
+        if target["skill"] == "pending":  # the rest is known once the model has picked (a "stages" event)
+            return [{"id": "route", "title": "Understand request"}]
         if target["skill"] == "combo":
             notes = SKILLS["rag"].stages(target["request"]) if target["request"] else []
             return [{"id": "route", "title": "Understand request"}, *notes,
@@ -713,11 +764,20 @@ class JarvisSkill(Skill):  # one input for everything: router.py picks the skill
         return [{"id": "route", "title": "Understand request"}, *SKILLS[target["skill"]].stages(target["request"])]
 
     def run(self, request, run):
-        target = request["route"]
         run.emit("stage_start", stage="route", title="Understand request")
+        started, outcome = time.time(), "ok"
+        if request["route"]["skill"] == "pending":
+            target, problem = self.pick(request)
+            if problem:
+                run.emit("log", stage="route", line=problem)
+                outcome = "warning"
+            run.check_cancelled()
+            request.update(self.plan(request, request["question"], request["history"], target))  # may reject, like validate
+            run.emit("stages", stages=self.stages(request))  # the monitor now shows the chosen pipeline
+        target = request["route"]
         run.emit("log", stage="route", line=f"→ {target['title']}: {target['reason']}")
         run.emit("route", skill=target["skill"], title=target["title"], reason=target["reason"])
-        run.emit("stage_end", stage="route", status="ok", seconds=0)
+        run.emit("stage_end", stage="route", status=outcome, seconds=round(time.time() - started, 2))
         if target["skill"] != "combo":
             return SKILLS[target["skill"]].run(target["request"], run)
         if target.get("follow_up"):  # "find shorts about it": the previous answer in this conversation
