@@ -13,6 +13,8 @@ API
   GET  /api/runs/<id>                 full run: summary, request, events
   GET  /api/runs/<id>/events?from=N   Server-Sent Events, live; resumes from N or Last-Event-ID
   POST /api/runs/<id>/cancel          stop the running stage
+  POST /api/runs/<id>/feedback        {rating?: good|bad, issues?: [ids], comment?} -> {feedback} (run must have ended)
+  GET  /api/feedback                  {issues: [{id, label}], reports: [newest first]}
   POST /api/transcribe?language=he    raw audio body -> {text, ...} via local Whisper
   POST /api/speak                     {text, language?} -> whole clip: audio/mpeg (neural voice) or audio/wav (local MMS)
   POST /api/speak/prepare             {text, language?} -> {id, engine}; then
@@ -38,7 +40,7 @@ import tts  # noqa: E402
 import status  # noqa: E402
 import voice  # noqa: E402
 import vault_watch  # noqa: E402
-from runs import Busy, RunManager  # noqa: E402
+from runs import FEEDBACK_ISSUES, Busy, RunManager  # noqa: E402
 
 STATIC = HERE / "static"
 MEDIA = HERE / "data" / "media"  # memes drawn by the memes MCP server
@@ -99,6 +101,9 @@ class Handler(BaseHTTPRequestHandler):
                 return self.send_json(status.check_all(force=query.get("force") == ["1"]))
             if url.path == "/api/skills":
                 return self.send_json(skills.describe())
+            if url.path == "/api/feedback":
+                return self.send_json({"issues": [{"id": k, "label": v} for k, v in FEEDBACK_ISSUES.items()],
+                                       "reports": self.manager.feedback_reports()})
             if url.path == "/api/runs":
                 return self.send_json({"active": self.manager.active_id(), "runs": self.manager.history()})
             if parts[:2] == ["api", "speak"] and len(parts) == 3:
@@ -141,6 +146,11 @@ class Handler(BaseHTTPRequestHandler):
                     return self.error(404, "Run not found")
                 run.cancel()
                 return self.send_json({"ok": True})
+            if parts[:2] == ["api", "runs"] and len(parts) == 4 and parts[3] == "feedback":
+                feedback = self.manager.set_feedback(parts[2], json.loads(raw or b"{}"))
+                if feedback is None:
+                    return self.error(404, "Run not found")
+                return self.send_json({"feedback": feedback})
             if url.path == "/api/transcribe":
                 language = parse_qs(url.query).get("language", [""])[0][:5] or None
                 audio = raw

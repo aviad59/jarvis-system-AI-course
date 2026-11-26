@@ -16,7 +16,8 @@ const els = {
   autoscroll: $("autoscroll"), toast: $("toast"), boot: $("boot"), bootLines: $("boot-lines"),
 };
 const state = { conversation: [], skills: [], skill: null, runId: null, source: null, card: null, stageStart: {}, live: false,
-                lastAnswer: null, ended: true, recorder: null, recognizer: null, audio: null };
+                lastAnswer: null, ended: true, recorder: null, recognizer: null, audio: null,
+                feedback: null, feedbackIssues: null };
 
 /* ---------------- utilities ---------------- */
 function el(tag, props = {}, ...children) {   // DOM builder; text is always set as text, never as HTML
@@ -187,7 +188,9 @@ async function loadHistory() {
     }, el("span", { class: "q", dir: "auto", text: run.question || run.headline || run.skill }),
        el("span", { class: "m" }, el("span", { class: "st-" + run.status, text: run.status.toUpperCase() }),
          el("span", { text: new Date(run.started * 1000).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }) }),
-         el("span", { text: fmtSeconds(run.seconds) }))))));
+         el("span", { text: fmtSeconds(run.seconds) }),
+         run.feedback ? el("span", { class: "fb-" + run.feedback.rating, title: feedbackText(run.feedback),
+           text: run.feedback.rating === "good" ? "▲ GOOD" : "⚑ REPORTED" }) : null)))));
     if (!data.runs.length) els.history.replaceChildren(el("li", { class: "muted", text: "No missions yet." }));
     return data;
   } catch { return null; }
@@ -199,7 +202,7 @@ async function openRun(id) {   // replay a finished run, or follow one that is s
     closeStream();
     resetTelemetry();
     els.feed.replaceChildren();
-    state.runId = id; state.live = false;
+    state.runId = id; state.live = false; state.feedback = data.summary.feedback || null;
     for (const event of data.events) handle(event);
     loadHistory();
   } catch (error) { toast(error.message); }
@@ -229,7 +232,7 @@ async function submit(event) {
 function follow(runId) {
   closeStream();
   resetTelemetry();
-  state.runId = runId; state.live = true; state.ended = false;
+  state.runId = runId; state.live = true; state.ended = false; state.feedback = null;
   els.send.disabled = true;
   const source = new EventSource(`/api/runs/${encodeURIComponent(runId)}/events`);
   state.source = source;
@@ -249,6 +252,7 @@ const HANDLERS = {
     els.intro?.remove();
     closeTheater();
     state.asked = e.request.question || "";
+    state.runSkill = e.skill;
     if (e.request.question) els.feed.append(el("div", { class: "msg-user", dir: "auto" }, el("span", { class: "who", text: "YOU" }), e.request.question));
     state.card = el("div", { class: "msg-ai" }, el("span", { class: "who", text: "JARVIS" }),
       el("div", { class: "pending" }, el("i"), el("i"), el("i"), el("span", { text: "Working on it" })));
@@ -375,6 +379,7 @@ const HANDLERS = {
     for (const node of els.stages.querySelectorAll(".stage.active")) node.classList.replace("active", "cancelled");
     state.card?.querySelector(".pending")?.remove();
     if (e.status === "cancelled") { fillCard(el("p", { class: "claim", text: "Run aborted." })); }
+    if (state.card && state.runSkill !== "vault_sync") { state.card.append(feedbackBar(state.runId, e.seconds, state.feedback)); scrollFeed(); }
     logLine(`■ ${e.status.toUpperCase()} in ${fmtSeconds(e.seconds)}`, e.status === "done" ? "l-ok" : "l-err");
     const live = state.live;
     state.live = false;
@@ -408,6 +413,63 @@ function handle(event) {
     if (fresh) state.reply = state.reply ? state.reply.then(() => (state.runId === run ? speak(fresh) : null)) : speak(fresh);
   }
   else if (!state.live) state.ended = true;
+}
+/* Feedback: rate the response, or tick what went wrong (slow, wrong behavior, ...). Saved with the run. */
+function feedbackText(fb) {
+  if (fb.rating === "good") return "Rated good" + (fb.comment ? `: ${fb.comment}` : "");
+  const labels = Object.fromEntries((state.feedbackIssues || []).map((i) => [i.id, i.label]));
+  return "Reported: " + [...fb.issues.map((id) => labels[id] || id), fb.comment].filter(Boolean).join(" · ");
+}
+async function loadFeedbackIssues() {
+  if (!state.feedbackIssues) state.feedbackIssues = (await api("/api/feedback")).issues;
+  return state.feedbackIssues;
+}
+function feedbackBar(runId, seconds, existing) {   // under each finished answer: Good / Report a problem -> tick boxes + comment
+  const box = el("div", { class: "feedback" });
+  const send = async (body, button) => {
+    if (button) button.disabled = true;
+    try {
+      const { feedback } = await api(`/api/runs/${encodeURIComponent(runId)}/feedback`, {
+        method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body) });
+      existing = feedback;
+      if (state.runId === runId) state.feedback = feedback;
+      showDone();
+      loadHistory();
+      toast(feedback.rating === "good" ? "Thanks for the feedback." : "Report saved. Thanks, it helps improve Jarvis.", "info");
+    } catch (error) { toast(error.message); if (button) button.disabled = false; }
+  };
+  const showAsk = () => box.replaceChildren(el("span", { class: "fb-q", text: "How was this response?" }),
+    el("button", { type: "button", class: "fb-btn good", title: "Good response", onclick: (ev) => send({ rating: "good" }, ev.currentTarget) }, "▲ Good"),
+    el("button", { type: "button", class: "fb-btn bad", title: "Report a problem with this response", onclick: () => showForm(null) }, "⚑ Report a problem"));
+  const showDone = () => box.replaceChildren(
+    el("span", { class: "fb-done fb-" + existing.rating, dir: "auto", text: feedbackText(existing) }),
+    el("button", { type: "button", class: "fb-btn", onclick: () => showForm(existing.rating === "bad" ? existing : null) }, "Change"));
+  async function showForm(prev) {
+    let issues;
+    try { issues = await loadFeedbackIssues(); } catch (error) { return toast(error.message); }
+    const ticked = new Set(prev?.issues || []);
+    const comment = el("textarea", { class: "fb-comment", rows: "2", maxlength: "1000", dir: "auto",
+      placeholder: "What happened? What did you expect? (optional)" });
+    comment.value = prev?.comment || "";
+    const boxes = issues.map((i) => el("input", { type: "checkbox", value: i.id, checked: ticked.has(i.id) }));
+    const submitBtn = el("button", { type: "submit", class: "fb-btn bad" }, "Send report");
+    const form = el("form", { class: "fb-form", onsubmit: (ev) => {
+      ev.preventDefault();
+      const chosen = boxes.filter((b) => b.checked).map((b) => b.value);
+      if (!chosen.length && !comment.value.trim()) return toast("Tick at least one problem, or write a comment.", "info");
+      send({ rating: "bad", issues: chosen, comment: comment.value }, submitBtn);
+    } },
+      el("div", { class: "fb-head" }, el("span", { class: "fb-q", text: "What was wrong with this response?" }),
+        seconds != null ? el("span", { class: "fb-time", text: `took ${fmtSeconds(seconds)}` }) : null),
+      el("div", { class: "fb-issues" }, issues.map((i, n) => el("label", { class: "fb-issue" }, boxes[n], el("span", { text: i.label })))),
+      comment,
+      el("div", { class: "fb-actions" }, submitBtn,
+        el("button", { type: "button", class: "fb-btn", onclick: () => (existing ? showDone() : showAsk()) }, "Cancel")));
+    box.replaceChildren(form);
+    scrollFeed();
+  }
+  if (existing) showDone(); else showAsk();
+  return box;
 }
 function say(text) {   // what is read aloud at the end of the run; a combined run says the answer, then the Shorts line
   state.lastAnswer = [state.lastAnswer, text].filter(Boolean).join(" ");
@@ -962,6 +1024,7 @@ function init() {
   if (!window.MediaRecorder && !BrowserSpeech) { els.mic.disabled = true; els.mic.title = "Recording is not supported in this browser"; }
   window.speechSynthesis?.getVoices();   // some browsers load voices lazily
   loadSkills().catch((error) => toast(error.message));
+  loadFeedbackIssues().catch(() => {});   // labels for the report form and the history; retried when the form opens
   const linked = new URLSearchParams(location.hash.slice(1)).get("run");   // deep link: /#run=<id>
   loadHistory().then((data) => { if (data?.active) follow(data.active); else if (linked) openRun(linked); });
   boot();

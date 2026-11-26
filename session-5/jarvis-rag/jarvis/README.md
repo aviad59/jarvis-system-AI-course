@@ -54,6 +54,7 @@ The Systems panel shows the watcher's state.
 | Mission log | Every run, saved in `jarvis/data/runs/`; click to replay. Link a run with `/#run=<id>` |
 
 ### Ask Jarvis: one box for everything
+| Feedback | Under every finished answer: **▲ Good** or **⚑ Report a problem**: tick boxes (slow response, wrong behavior, misunderstood the request, incorrect / made-up answer, incomplete, bad sources, wrong language, voice problem, wrong video or meme, other) plus an optional comment. Saved on the run (shown in the Mission log) and appended to `jarvis/data/runs/feedback.jsonl` with the question, skill, model and duration; `GET /api/feedback` lists the latest reports |
 
 With **Ask Jarvis** selected (the default), type or say anything; `router.py` decides where it goes
 and the card shows the choice (`JARVIS · YOUTUBE SHORTS`, and the reason in the log):
