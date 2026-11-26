@@ -18,6 +18,7 @@ const els = {
 const state = { conversation: [], skills: [], skill: null, runId: null, source: null, card: null, stageStart: {}, live: false,
                 lastAnswer: null, ended: true, recorder: null, recognizer: null, audio: null,
                 feedback: null, feedbackIssues: null };
+const FEEDBACK = false;   // the Good / Report a problem bar under each answer (and the marks in the Mission log); true = show it
 
 /* ---------------- utilities ---------------- */
 function el(tag, props = {}, ...children) {   // DOM builder; text is always set as text, never as HTML
@@ -185,7 +186,7 @@ async function loadHistory() {
        el("span", { class: "m" }, el("span", { class: "st-" + run.status, text: run.status.toUpperCase() }),
          el("span", { text: new Date(run.started * 1000).toLocaleString("en-GB", { dateStyle: "short", timeStyle: "short" }) }),
          el("span", { text: fmtSeconds(run.seconds) }),
-         run.feedback ? el("span", { class: "fb-" + run.feedback.rating, title: feedbackText(run.feedback),
+         FEEDBACK && run.feedback ? el("span", { class: "fb-" + run.feedback.rating, title: feedbackText(run.feedback),
            text: run.feedback.rating === "good" ? "▲ GOOD" : "⚑ REPORTED" }) : null)))));
     if (!data.runs.length) els.history.replaceChildren(el("li", { class: "muted", text: "No missions yet." }));
     return data;
@@ -381,7 +382,7 @@ const HANDLERS = {
     for (const node of els.stages.querySelectorAll(".stage.active")) node.classList.replace("active", "cancelled");
     state.card?.querySelector(".pending")?.remove();
     if (e.status === "cancelled") { fillCard(el("p", { class: "claim", text: "Run aborted." })); }
-    if (state.card && state.runSkill !== "vault_sync") { state.card.append(feedbackBar(state.runId, e.seconds, state.feedback)); scrollFeed(); }
+    if (FEEDBACK && state.card && state.runSkill !== "vault_sync") { state.card.append(feedbackBar(state.runId, e.seconds, state.feedback)); scrollFeed(); }
     logLine(`■ ${e.status.toUpperCase()} in ${fmtSeconds(e.seconds)}`, e.status === "done" ? "l-ok" : "l-err");
     const live = state.live;
     state.live = false;
@@ -1026,7 +1027,7 @@ function init() {
   if (!window.MediaRecorder && !BrowserSpeech) { els.mic.disabled = true; els.mic.title = "Recording is not supported in this browser"; }
   window.speechSynthesis?.getVoices();   // some browsers load voices lazily
   loadSkills().catch((error) => toast(error.message));
-  loadFeedbackIssues().catch(() => {});   // labels for the report form and the history; retried when the form opens
+  if (FEEDBACK) loadFeedbackIssues().catch(() => {});   // labels for the report form and the history; retried when the form opens
   const linked = new URLSearchParams(location.hash.slice(1)).get("run");   // deep link: /#run=<id>
   loadHistory().then((data) => { if (data?.active) follow(data.active); else if (linked) openRun(linked); });
   boot();

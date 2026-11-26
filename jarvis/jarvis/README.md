@@ -54,7 +54,7 @@ The Systems panel shows the watcher's state.
 | Dialogue | Answers as claims with citation chips; click a chip to see the exact source chunk |
 | Pipeline telemetry | Each stage with live timer and status, retrieved evidence with scores, raw log |
 | Mission log | Every run, saved in `jarvis/data/runs/`; click to replay. Link a run with `/#run=<id>` |
-| Feedback | Under every finished answer: **▲ Good** or **⚑ Report a problem**: tick boxes (slow response, wrong behavior, misunderstood the request, incorrect / made-up answer, incomplete, bad sources, wrong language, voice problem, wrong video or meme, other) plus an optional comment. Saved on the run (shown in the Mission log) and appended to `jarvis/data/runs/feedback.jsonl` with the question, skill, model and duration; `GET /api/feedback` lists the latest reports |
+| Feedback | **Off for now** (`FEEDBACK = false` in `static/app.js`; the server still accepts reports). When on, under every finished answer: **▲ Good** or **⚑ Report a problem**: tick boxes (slow response, wrong behavior, misunderstood the request, incorrect / made-up answer, incomplete, bad sources, wrong language, voice problem, wrong video or meme, other) plus an optional comment. Saved on the run (shown in the Mission log) and appended to `jarvis/data/runs/feedback.jsonl` with the question, skill, model and duration; `GET /api/feedback` lists the latest reports |
 
 ### Ask Jarvis: one box for everything
 
