@@ -576,6 +576,29 @@ class JarvisServer(unittest.TestCase):
         self.assertNotIn("--source", atlas["retrieve"])
         self.assertEqual(self.json("/api/runs", {"skill": "rag", "request": {"question": "x", "source": "s3"}})[0], 400)
 
+    def test_evidence_carries_the_chunk_text(self):  # clicking an Evidence item shows the chunk in a popup
+        import rag
+        result = {"rank": 1, "chunk_id": "c1", "score": 0.9, "text": "הצוות אוהב פיצה.\nSecond line.",
+                  "metadata": {"document_id": "D1", "version": 1, "status": "active", "source": "Meetings/a.md"}}
+        events = []
+
+        class Run:
+            def emit(self, kind, **data): events.append((kind, data))
+
+        saved = rag.SEARCH_RESULTS
+        with tempfile.TemporaryDirectory() as tmp:
+            rag.SEARCH_RESULTS = Path(tmp) / "search-results.json"
+            rag.SEARCH_RESULTS.write_text(json.dumps({"results": [result], "retrieval": {"method": "cosine_similarity"}}),
+                                          encoding="utf-8")
+            try:
+                skills.RagSkill.emit_retrieval(Run())
+            finally:
+                rag.SEARCH_RESULTS = saved
+        kind, data = events[0]
+        self.assertEqual(kind, "retrieval")
+        self.assertEqual(data["results"][0]["text"], result["text"])
+        self.assertEqual(data["results"][0]["source"], "Meetings/a.md")
+
     def test_vault_loader_keeps_path_date_and_project(self):  # Obsidian notes: only Projects + Meetings, metadata kept
         import rag
         sys.path.insert(0, str(rag.EX1))
@@ -663,6 +686,68 @@ class JarvisServer(unittest.TestCase):
         other = status.atlas_error_detail(ValueError("bad host ac-x-shard-00-01.abc.mongodb.net:27017 " * 20), {}, safe)
         self.assertNotIn("mongodb.net", other)
         self.assertLessEqual(len(other), 160)
+
+    def stored_run(self, run_id, skill, events, request):  # a finished run on disk, as the history keeps it
+        summary = {"id": run_id, "skill": skill, "question": request.get("question", ""), "status": "done",
+                   "started": time.time(), "seconds": 1.0, "headline": "", "feedback": None}
+        path = Path(self.tmp.name) / f"{run_id}.json"
+        path.write_text(json.dumps({"summary": summary, "request": request, "events": events}), encoding="utf-8")
+        self.addCleanup(path.unlink)
+
+    def test_judge_grades_a_finished_answer_with_its_own_model(self):  # LLM as a judge; the model call is stubbed
+        import runs
+        self.stored_run("20260101-000000-aaaa", "jarvis", JUDGED_ANSWER_EVENTS, {"question": "who handles auth errors?",
+                                                                               "provider": "anthropic", "model": ""})
+        calls = []
+
+        def fake_ask(prompt, schema, provider, model, **kw):
+            calls.append((provider, model, kw.get("max_tokens"), prompt))
+            return JUDGE_REPLY
+        saved, saved_save, stored = skills.ask_json, skills.JudgeSkill.save, []
+        skills.ask_json = fake_ask
+        skills.JudgeSkill.save = classmethod(lambda cls, doc: stored.append(doc) or "rag_session4.judgements")  # no real Atlas
+        try:
+            self.wait_idle()
+            code, data = self.json("/api/runs", {"skill": "judge", "request": {"run_id": "20260101-000000-aaaa"}})
+            self.assertEqual(code, 202)
+            events = self.events(data["run_id"])
+            self.assertEqual([s["id"] for s in events[0]["stages"]], ["collect", "judge", "save"])
+            verdict = next(e for e in events if e["type"] == "judgement")
+            self.assertEqual((verdict["provider"], verdict["model"], verdict["same_model"]), ("ollama", "gemma3:4b", True))  # the answer's model
+            self.assertEqual((verdict["overall"], verdict["target_run"]), (4.3, "20260101-000000-aaaa"))
+            self.assertEqual(calls[0][2], 2000)  # room for a verdict per claim
+            self.assertIn("who handles auth errors?", calls[0][3])
+            self.assertEqual(self.json(f"/api/runs/{data['run_id']}")[1]["summary"]["headline"], "Judge score 4.3/5")
+            self.assertEqual(next(e for e in events if e["type"] == "judgement_saved")["saved_to"], "rag_session4.judgements")
+            doc = stored[0]  # what goes to MongoDB: one document per judgement, keyed by the judge run's id
+            self.assertEqual((doc["_id"], doc["target_run"], doc["target_skill"], doc["route"], doc["overall"], doc["model"]),
+                             (data["run_id"], "20260101-000000-aaaa", "jarvis", "rag", 4.3, "gemma3:4b"))
+            self.assertEqual(len(doc["claims"]), 2)
+            self.assertIsNotNone(doc["judged_at"].tzinfo)
+            skills.JudgeSkill.save = classmethod(lambda cls, doc: (_ for _ in ()).throw(RuntimeError("cannot reach the cluster")))
+            self.wait_idle()
+            code, data = self.json("/api/runs", {"skill": "judge", "request": {"run_id": "20260101-000000-aaaa"}})
+            events = self.events(data["run_id"])  # the database is down: the scorecard still counts
+            self.assertEqual(events[-1]["status"], "done")
+            self.assertEqual(next(e for e in events if e["type"] == "judgement_saved")["error"], "cannot reach the cluster")
+            self.assertEqual(next(e for e in events if e["type"] == "stage_end" and e["stage"] == "save")["status"], "warning")
+            skills.ask_json = lambda *a, **k: (_ for _ in ()).throw(ConnectionError("refused"))  # the model is down
+            self.wait_idle()
+            code, data = self.json("/api/runs", {"skill": "judge", "request": {"run_id": "20260101-000000-aaaa"}})
+            events = self.events(data["run_id"])
+            self.assertEqual(events[-1]["status"], "error")
+            self.assertTrue(next(e for e in events if e["type"] == "error")["message"].startswith("Judge failed — ConnectionError"))
+        finally:
+            skills.ask_json, skills.JudgeSkill.save = saved, saved_save
+        self.assertNotIn("judge", {s["name"] for s in self.json("/api/skills")[1]})  # started from a card, not the picker
+        self.stored_run("20260101-000000-bbbb", "status", [{"type": "message", "text": "All systems are ready."}], {})
+        busy = runs.Run("rag", {"question": "q"})
+        server.Handler.manager.runs[busy.id] = busy  # still running
+        try:
+            for run_id in ("does-not-exist", "../x", "20260101-000000-bbbb", busy.id):
+                self.assertEqual(self.json("/api/runs", {"skill": "judge", "request": {"run_id": run_id}})[0], 400, run_id)
+        finally:
+            server.Handler.manager.runs.pop(busy.id)
 
     def test_invalid_requests(self):
         self.assertEqual(self.json("/api/runs", {"skill": "nope", "request": {}})[0], 400)
@@ -834,6 +919,101 @@ class JarvisServer(unittest.TestCase):
         self.assertTrue(any(lang == "he" and "תשעים וארבע אחוז" in text for lang, text in parts))
         self.assertEqual(tts.prepare_english("notification_delay_p95_seconds"), "notification delay p ninety five seconds")
         self.assertEqual(tts.english_number(2026), "two thousand twenty six")
+
+
+JUDGED_SOURCES = [{"chunk_id": "c1", "text": "Escalate auth errors to the on-call SRE after 30 minutes.",
+                   "metadata": {"document_id": "auth-runbook", "version": 2, "status": "current"}},
+                  {"chunk_id": "c2", "text": "Escalate auth errors to the team lead.",
+                   "metadata": {"document_id": "auth-runbook", "version": 1, "status": "superseded"}}]
+JUDGED_ANSWER_EVENTS = [
+    {"seq": 0, "type": "run_start", "skill": "jarvis"},
+    {"seq": 1, "type": "route", "skill": "rag", "title": "Ask the documents", "reason": "a question about the notes"},
+    {"seq": 2, "type": "answer", "question": "who handles auth errors?", "missing_information": [], "sources": JUDGED_SOURCES,
+     "claims": [{"text": "Auth errors go to the on-call SRE.", "citation_ids": ["c1"]},
+                {"text": "Escalate after 30 minutes.", "citation_ids": ["c9"]}],
+     "citation_status": "invalid_source_ids", "invalid_source_ids": ["c9"], "provider": "ollama", "model": "gemma3:4b", "seconds": 1},
+    {"seq": 3, "type": "run_end", "status": "done"}]
+JUDGE_REPLY = {"claims": [{"support": "supported", "cited_ok": True, "reason": "S1 says so"},
+                          {"support": "partial", "cited_ok": True, "reason": "the time is in S1"}],
+               "tool_choice": {"score": 5, "reason": "a notes question went to the notes"},
+               "relevance": {"score": 4, "reason": "answers who"}, "completeness": {"score": 7, "reason": "all of it"},
+               "current_version": {"score": 5, "reason": "uses v2"}, "language": {"score": 4, "reason": "clear"}}
+
+
+class Judge(unittest.TestCase):  # judge.py: what is judged, which criteria apply, the prompt, the schema, the scores
+    def setUp(self):
+        import judge
+        self.judge = judge
+
+    def test_criteria_follow_what_the_run_did(self):
+        judge = self.judge
+        case = judge.case_from_run(JUDGED_ANSWER_EVENTS, {"question": "who handles auth errors?"})
+        self.assertEqual(judge.applicable(case), ["tool_choice", "faithfulness", "citations", "relevance", "completeness",
+                                                  "current_version", "language"])
+        current_only = [{**e, "sources": JUDGED_SOURCES[:1]} if e["type"] == "answer" else e for e in JUDGED_ANSWER_EVENTS]
+        self.assertNotIn("current_version", judge.applicable(judge.case_from_run(current_only, {"question": "q"})))
+        direct = [e for e in JUDGED_ANSWER_EVENTS if e["type"] != "route"]  # the user picked "Ask the documents": no tool decision
+        self.assertNotIn("tool_choice", judge.applicable(judge.case_from_run(direct, {"question": "q"})))
+        shorts = [{"type": "route", "skill": "shorts", "title": "YouTube Shorts", "reason": "a YouTube request"},
+                  {"type": "log", "stage": "mcp", "line": 'MCP: call search_youtube_shorts {"query": "cats", "limit": 5}'},
+                  {"type": "posts", "tool": "search_youtube_shorts", "query": "cats", "posts": [{"title": "Cat fails"}]}]
+        case = judge.case_from_run(shorts, {"question": "find shorts about cats"})
+        self.assertEqual(judge.applicable(case), ["tool_choice", "relevance"])
+        self.assertIn('MCP: call search_youtube_shorts {"query": "cats"', judge.prompt(case, judge.applicable(case)))
+        self.assertIn("1. Cat fails", judge.prompt(case, judge.applicable(case)))
+        meme = [{"type": "meme", "template": "drake", "name": "Drakeposting", "text": ["a", "b"], "notes": []}]
+        self.assertEqual(judge.applicable(judge.case_from_run(meme, {"question": "drake meme: a / b"})), ["relevance", "language"])
+        self.assertIsNone(judge.case_from_run([{"type": "message", "text": "All systems are ready."}], {}))
+
+    def test_prompt_and_schema(self):
+        judge = self.judge
+        case = judge.case_from_run(JUDGED_ANSWER_EVENTS, {"question": "מי מטפל בשגיאות התחברות?"})
+        ids = judge.applicable(case)
+        text = judge.prompt(case, ids)
+        for part in ("<<<SOURCES", "[S1] (document_id=auth-runbook, version=2, status=current)", "[S2]", "SOURCES>>>",
+                     "Claim 2: Escalate after 30 minutes.   [cites: c9 (NOT among the sources sent)]", "exactly 2 items",
+                     "(Jarvis answered it as: who handles auth errors?)", "in Hebrew"):
+            self.assertIn(part, text)
+        self.assertLess(text.index("<<<SOURCES"), text.index("Escalate auth errors to the team lead."), )
+        self.assertLess(text.index("Escalate auth errors to the team lead."), text.index("SOURCES>>>"))  # notes stay inside the data block
+        properties = judge.schema(case, ids)["properties"]
+        self.assertEqual(set(properties), {"claims", "tool_choice", "relevance", "completeness", "current_version", "language"})
+        self.assertEqual(properties["claims"]["items"]["properties"]["support"]["enum"], ["supported", "partial", "unsupported"])
+
+    def test_scores_are_computed_not_written_by_the_model(self):
+        judge = self.judge
+        case = judge.case_from_run(JUDGED_ANSWER_EVENTS, {"question": "who handles auth errors?"})
+        ids = judge.applicable(case)
+        result = judge.score(case, ids, JUDGE_REPLY)
+        rows = {r["id"]: r for r in result["criteria"]}
+        self.assertEqual(rows["faithfulness"]["score"], 4.0)  # supported + partial = 0.75 -> 1 + 4 * 0.75
+        self.assertEqual(rows["citations"]["score"], 3.0)  # claim 2 cites c9, never sent: wrong whatever the model says
+        self.assertEqual([c["cited_ok"] for c in result["claims"]], [True, False])
+        self.assertEqual(rows["completeness"]["score"], 5)  # 7 is clamped to 1..5
+        self.assertEqual(result["overall"], 4.3)  # (5 + 4 + 3 + 4 + 5 + 5 + 4) / 7 = 4.29
+        empty = judge.score(case, ids, {"claims": "junk", "relevance": {"score": "high"}})
+        self.assertIsNone(empty["overall"])  # a broken reply gives no verdict, never a made-up score
+        self.assertEqual([c["support"] for c in empty["claims"]], [None, None])
+        no_versions = judge.case_from_run([{**e, "sources": JUDGED_SOURCES[:1]} if e["type"] == "answer" else e
+                                           for e in JUDGED_ANSWER_EVENTS], {"question": "q"})
+        row = next(r for r in judge.score(no_versions, judge.applicable(no_versions), {})["criteria"] if r["id"] == "current_version")
+        self.assertEqual((row["score"], row["reason"]), (None, "No older versions among the sources"))  # shown as n/a
+
+    def test_judge_uses_the_model_that_answered(self):
+        pick, judge = skills.JudgeSkill.judge_model, self.judge
+        answered = judge.case_from_run(JUDGED_ANSWER_EVENTS, {"question": "q"})
+        self.assertEqual(pick(answered, {"provider": "anthropic"}), ("ollama", "gemma3:4b"))
+        shorts = judge.case_from_run([{"type": "posts", "tool": "t", "query": "q", "posts": []}], {"question": "q"})
+        self.assertEqual(pick(shorts, {"provider": "anthropic", "model": ""}), ("anthropic", skills.rag.DEFAULT_MODELS["anthropic"]))
+        self.assertEqual(pick(shorts, {"provider": "ollama", "model": "qwen3:8b"}), ("ollama", "qwen3:8b"))
+        meme = judge.case_from_run([{"type": "meme", "template": "drake", "name": "Drake", "text": ["a", "b"]}], {"question": "q"})
+        self.assertEqual(pick(meme, {"provider": "anthropic", "route": {"request": {"captions_by": "ollama"}}}),
+                         ("ollama", "gemma3:4b"))  # Ask Jarvis -> meme: the captions model, not "Answer with"
+        self.assertEqual(pick(meme, {"captions_by": "gemini"}), ("gemini", skills.rag.DEFAULT_MODELS["gemini"]))  # a direct meme run
+        import urllib.error
+        rejected = urllib.error.HTTPError("https://api.anthropic.com/v1/messages", 401, "Unauthorized", {}, None)
+        self.assertEqual(skills.JudgeSkill.failure(rejected, "anthropic"),
+                         "anthropic rejected the API key (HTTP 401). Put a valid key in your .env / atlas-credentials.env")
 
 
 FAKE_MCP_SERVER = r'''

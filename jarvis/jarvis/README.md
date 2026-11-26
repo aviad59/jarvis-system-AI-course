@@ -49,16 +49,45 @@ The Systems panel shows the watcher's state.
 | Area | Shows |
 |---|---|
 | Systems | Ollama + models, MongoDB Atlas chunk count, Anthropic key, Obsidian vault, local index, Whisper, speech engine |
-| Protocols | Left blank. The console always uses *Ask Jarvis* (one box for everything, see below) |
 | Core | The current state: standing by, listening, processing (with stage), responding |
 | Dialogue | Answers as claims with citation chips; click a chip to see the exact source chunk |
-| Pipeline telemetry | Each stage with live timer and status, retrieved evidence with scores, raw log |
+| Pipeline telemetry | Each stage with live timer and status, retrieved evidence with scores (click an item to read its chunk in a popup), raw log |
 | Mission log | Every run, saved in `jarvis/data/runs/`; click to replay. Link a run with `/#run=<id>` |
 | Feedback | **Off for now** (`FEEDBACK = false` in `static/app.js`; the server still accepts reports). When on, under every finished answer: **▲ Good** or **⚑ Report a problem**: tick boxes (slow response, wrong behavior, misunderstood the request, incorrect / made-up answer, incomplete, bad sources, wrong language, voice problem, wrong video or meme, other) plus an optional comment. Saved on the run (shown in the Mission log) and appended to `jarvis/data/runs/feedback.jsonl` with the question, skill, model and duration; `GET /api/feedback` lists the latest reports |
+| Judge | Left panel, under Systems. **⚖ Judge** on a finished answer, Shorts result or meme: an LLM grades it, the scorecard appears here, the button shows the score, and the judgement is saved in MongoDB (see below) |
+
+### Judge a response (LLM as a judge)
+
+Click **⚖ Judge** under a finished response. The scorecard appears in the **Judge** panel on the left (*show ↗* jumps
+back to the graded response), and the button then shows the score (`⚖ 4.3/5`; click it again to re-judge). A *judge* run (`judge.py`, skill `judge`) hands the model that wrote
+the response everything about it: the request, the tool Jarvis picked and why, the `MCP: call …` arguments, the
+sources sent to the answer model and the claims. The model gives a verdict per claim and a 1–5 score per criterion,
+in the request's language. Only the criteria that apply to the run are asked:
+
+| Criterion | Applies to | Score |
+|---|---|---|
+| Right tool | Ask Jarvis runs and MCP calls | model: the right skill / MCP tool, with sensible arguments |
+| Backed by sources | answers | **computed**: per claim supported = 1, partly = ½, not = 0 → 1 + 4 × mean |
+| Right citations | answers | **computed**: share of claims citing the source that supports them; an ID that was never sent is always wrong |
+| Answers the request | all | model |
+| Complete | answers | model: used everything relevant in the sources |
+| Current versions | answers whose sources include a superseded or older version | model; otherwise "n/a" |
+| Language & clarity | answers, memes | model |
+
+The overall score is the mean of the scores, computed by Jarvis, never written by the model. A reply with no verdict
+gives no score. The judge is **the same model that answered** (the answer's provider and model; for Shorts and memes,
+the run's model). That costs no extra key, but a model grading itself is lenient, and the scorecard says so. Judge runs
+appear in the Mission log as `Judge: <question>` with their score, and never enter the conversation memory.
+
+**Saved in MongoDB.** Every judgement is also written to MongoDB Atlas: collection `judgements` in the same database
+as the chunk vectors (`exercise-1-indexing/atlas-credentials.env`). One document per judge run, `_id` = the judge
+run's id, with `target_run`, `target_skill`, `route`, `question`, `provider`, `model`, `overall`, `criteria`,
+`claims` and `judged_at` (UTC). This is the *Save to MongoDB* stage. It runs after the scorecard is shown, so a slow or
+unreachable database never hides the verdict: it only shows *not saved to MongoDB* (the reason is in the log).
 
 ### Ask Jarvis: one box for everything
 
-With **Ask Jarvis** selected (the default), type or say anything; `router.py` decides where it goes
+Type or say anything; `router.py` decides where it goes
 and the card shows the choice (`JARVIS · YOUTUBE SHORTS`, and the reason in the log):
 
 | You say | Goes to |
@@ -185,6 +214,7 @@ browser (static/)  --POST /api/runs-->  server.py --> RunManager (runs.py) --> S
 * `mcp_client.py` – Jarvis's MCP client (standard library only): one long-lived stdio connection per server in
   `jarvis/.mcp.json`, shared by the skills. A server starts on first use, is restarted if it died, and stops with
   Jarvis. `call_tool(server, tool, arguments)`, `list_tools(server)`, `servers()`.
+* `judge.py` – LLM as a judge: the criteria, what is judged in a finished run, the judge's prompt and schema, the scores.
 * `voice.py` – local Whisper speech-to-text.
 * `tts.py` – text-to-speech: streamed neural voices (edge-tts), local MMS-TTS fallback (Hebrew, English).
 * `server.py` – HTTP API, SSE stream, static files (standard library only).
@@ -207,7 +237,7 @@ class WeatherSkill(Skill):
         run.emit("message", text="Sunny, 24°C.")
 ```
 
-Add an instance to `SKILLS` in `skills.py`. The console builds its button and option controls
+Add an instance to `SKILLS` in `skills.py`. The console builds its option controls
 automatically. A new event type only needs a handler in `HANDLERS` in `static/app.js`.
 
 ## Tests

@@ -9,15 +9,15 @@
 const $ = (id) => document.getElementById(id);
 const els = {
   body: document.body, feed: $("feed"), intro: $("intro"), question: $("question"), send: $("send"), mic: $("mic"),
-  options: $("options"), skills: $("skills"), systems: $("systems"), history: $("history"), stages: $("stages"),
+  options: $("options"), systems: $("systems"), history: $("history"), stages: $("stages"),
   evidence: $("evidence"), evidenceMeta: $("evidence-meta"), log: $("log"), cancel: $("cancel"), conn: $("conn"),
   banner: $("state-banner"), coreState: $("core-state"), coreSub: $("core-sub"), speak: $("speak"), lang: $("voice-lang"),
-  engine: $("stt-engine"),
+  engine: $("stt-engine"), judge: $("judge"),
   autoscroll: $("autoscroll"), toast: $("toast"), boot: $("boot"), bootLines: $("boot-lines"),
 };
 const state = { conversation: [], skills: [], skill: null, runId: null, source: null, card: null, stageStart: {}, live: false,
                 lastAnswer: null, ended: true, recorder: null, recognizer: null, audio: null,
-                feedback: null, feedbackIssues: null };
+                feedback: null, feedbackIssues: null, judgeTarget: null, judgeButton: null, judgeable: false };
 const FEEDBACK = false;   // the Good / Report a problem bar under each answer (and the marks in the Mission log); true = show it
 
 /* ---------------- utilities ---------------- */
@@ -144,7 +144,7 @@ async function boot() {
 /* ---------------- skills & options ---------------- */
 async function loadSkills() {
   state.skills = await api("/api/skills");
-  // The Protocols panel is left blank: always "Ask Jarvis", which routes every question itself.
+  // There is no skill picker: always "Ask Jarvis", which routes every question itself.
   selectSkill(state.skills.find((s) => s.name === "jarvis") || state.skills[0]);
 }
 function selectSkill(skill) {
@@ -248,12 +248,16 @@ const HANDLERS = {
   run_start(e) {
     els.intro?.remove();
     closeTheater();
-    state.asked = e.request.question || "";
     state.runSkill = e.skill;
-    if (e.request.question) els.feed.append(el("div", { class: "msg-user", dir: "auto" }, el("span", { class: "who", text: "YOU" }), e.request.question));
-    state.card = el("div", { class: "msg-ai" }, el("span", { class: "who", text: "JARVIS" }),
-      el("div", { class: "pending" }, el("i"), el("i"), el("i"), el("span", { text: "Working on it" })));
-    els.feed.append(state.card);
+    state.judgeable = false;
+    if (e.skill === "judge") startJudgeCard(e);   // under the response it grades; never part of the conversation
+    else {
+      state.asked = e.request.question || "";
+      if (e.request.question) els.feed.append(el("div", { class: "msg-user", dir: "auto" }, el("span", { class: "who", text: "YOU" }), e.request.question));
+      state.card = el("div", { class: "msg-ai" }, el("span", { class: "who", text: "JARVIS" }),
+        el("div", { class: "pending" }, el("i"), el("i"), el("i"), el("span", { text: "Working on it" })));
+      els.feed.append(state.card);
+    }
     scrollFeed();
     els.stages.replaceChildren(...e.stages.map((s, i) => el("li", { class: "stage", id: "stage-" + s.id },
       el("span", { class: "node" }, el("b", { text: String(i + 1) })), el("span", { class: "name", text: s.title }), el("span", { class: "time", text: "—" }))));
@@ -288,7 +292,10 @@ const HANDLERS = {
   retrieval(e) {
     const top = Math.max(...e.results.map((r) => r.score), 1e-9);
     els.evidenceMeta.textContent = `${e.method} · ${e.results.length}/${e.candidates ?? "?"}`;
-    els.evidence.replaceChildren(...e.results.map((r) => el("div", { class: "ev", title: r.source },
+    closeChunk();
+    els.evidence.replaceChildren(...e.results.map((r) => el("div", { class: "ev", title: "Click to read this chunk", tabindex: "0",
+        role: "button", "aria-haspopup": "dialog", onclick: (ev) => openChunk(ev.currentTarget, r),
+        onkeydown: (ev) => { if (ev.key === "Enter" || ev.key === " ") { ev.preventDefault(); openChunk(ev.currentTarget, r); } } },
       el("div", { class: "ev-top" }, el("span", { class: "ev-doc" }, `#${r.rank} ${r.document_id}`, el("em", { text: "v" + r.version })),
         el("span", { class: "ev-score", text: r.score.toFixed(4) })),
       el("div", { class: "ev-bar" }, el("i", { style: `width:${Math.max(4, (r.score / top) * 100)}%` })),
@@ -324,6 +331,43 @@ const HANDLERS = {
         onclick: () => (els.body.dataset.state === "speaking" ? stopSpeaking() : speak(e.claims.map((c) => c.text).join(" "))) }, "🔊 Speak"));
     fillCard(claims, missing, foot);
     state.lastAnswer = e.claims.map((c) => c.text).join(" ");
+    state.judgeable = true;
+  },
+  judgement(e) {   // LLM as a judge: the scorecard of the response it graded (judge.py)
+    const mark = (s) => (s == null ? "na" : s >= 4 ? "ok" : s >= 2.5 ? "warn" : "err");
+    const verdict = e.overall == null ? "no verdict" : e.overall >= 4.5 ? "strong" : e.overall >= 3.5 ? "good" : e.overall >= 2.5 ? "weak" : "poor";
+    const head = el("div", { class: "judge-head" },
+      el("span", { class: "judge-score " + mark(e.overall), text: e.overall == null ? "—" : e.overall.toFixed(1) }),
+      el("span", { class: "judge-of", text: "/ 5" }), el("span", { class: "judge-verdict " + mark(e.overall), text: verdict }));
+    const rows = el("ul", { class: "judge-criteria" }, e.criteria.map((c) => el("li", { class: "jc" },
+      el("span", { class: "jc-title", text: c.title }),
+      el("span", { class: "jc-dots " + mark(c.score), title: c.score == null ? "not applicable / no verdict" : `${c.score} / 5` },
+        c.score == null ? el("em", { text: "n/a" }) : [1, 2, 3, 4, 5].map((n) => el("i", { class: n <= Math.round(c.score) ? "on" : "" })),
+        c.score == null ? null : el("b", { text: String(c.score) })),
+      el("span", { class: "jc-reason", dir: "auto", text: c.reason || "" }))));
+    const marks = { supported: "✓", partial: "◐", unsupported: "✕" };
+    const claims = e.claims.length ? el("div", { class: "judge-claims" }, el("h3", { text: "CLAIM BY CLAIM" }),
+      el("ul", {}, e.claims.map((c) => el("li", { class: "jcl " + (c.support || "none"), dir: "auto" },
+        el("span", { class: "jcl-mark", title: c.support || "no verdict", text: marks[c.support] || "?" }),
+        el("span", { class: "jcl-body" }, el("span", { text: c.text }),
+          c.cited_ok === false ? el("span", { class: "badge err", text: "wrong citation" }) : null,
+          c.reason ? el("span", { class: "jcl-reason", text: c.reason }) : null))))) : null;
+    const foot = el("div", { class: "answer-foot" }, el("span", { text: `judged by ${e.provider} · ${e.model}` }),
+      e.same_model ? el("span", { class: "badge warn", title: "A model grading its own response tends to be lenient",
+        text: "same model as the response" }) : null,
+      el("span", { text: `judge ${fmtSeconds(e.seconds)}` }), el("span", { class: "judge-saved", text: "saving…" }));
+    fillCard(head, rows, claims, foot);
+    if (state.judgeButton?.isConnected) {   // the graded card shows its score; click again to re-judge
+      state.judgeButton.textContent = e.overall == null ? "⚖ Judge" : `⚖ ${e.overall.toFixed(1)}/5`;
+      state.judgeButton.className = "judge-btn " + mark(e.overall);
+    }
+  },
+  judgement_saved(e) {   // the judgement's copy in MongoDB Atlas (<db>.judgements)
+    const note = state.card?.querySelector(".judge-saved");
+    if (!note) return;
+    note.textContent = e.saved_to ? `saved to ${e.saved_to}` : "not saved to MongoDB";
+    note.className = "judge-saved " + (e.saved_to ? "ok" : "warn");
+    if (e.error) note.title = e.error;
   },
   route(e) {   // Ask Jarvis: which skill the request went to, and why
     state.card && (state.card.querySelector(".who").textContent = "JARVIS · " + e.title.toUpperCase());
@@ -351,6 +395,7 @@ const HANDLERS = {
         el("span", { class: "play-icon", text: "▶" })),
       el("span", { class: "thumb-title", dir: "auto", text: p.title || videoId(p) }))));
     fillCard(head, gallery);
+    state.judgeable = true;
     const title = posts[0].title ? `: ${posts[0].title}` : "";
     say(single ? (hebrew ? `הנה הסרטון${title}.` : `Here's the video${title}.`)
       : hebrew ? `מצאתי ${e.posts.length} שורטס ${channel ? "אחרונים מ" : "על "}${e.query}. הנה הראשון${title}.`
@@ -365,6 +410,7 @@ const HANDLERS = {
       el("span", { text: e.renderer === "local" ? "drawn locally (Hebrew)" : "Memegen" }), el("span", { text: "MCP tool: generate_meme" }),
       e.notes?.length ? el("span", { dir: "auto", text: `from your notes: ${e.notes.join(", ")}` }) : null);
     fillCard(head, image, foot);
+    state.judgeable = true;
     say(e.hebrew ? "הנה המם שלך." : "Here's your meme.");   // after the notes answer, when there is one
   },
   song(e) {   // songs from the music MCP server (Suno by default): an audio player per song, the lyrics folded away
@@ -403,7 +449,8 @@ const HANDLERS = {
     for (const node of els.stages.querySelectorAll(".stage.active")) node.classList.replace("active", "cancelled");
     state.card?.querySelector(".pending")?.remove();
     if (e.status === "cancelled") { fillCard(el("p", { class: "claim", text: "Run aborted." })); }
-    if (FEEDBACK && state.card && state.runSkill !== "vault_sync") { state.card.append(feedbackBar(state.runId, e.seconds, state.feedback)); scrollFeed(); }
+    if (e.status === "done" && state.judgeable && state.card) addJudgeButton(state.card, state.runId);
+    if (FEEDBACK && state.card && !["vault_sync", "judge"].includes(state.runSkill)) { state.card.append(feedbackBar(state.runId, e.seconds, state.feedback)); scrollFeed(); }
     logLine(`■ ${e.status.toUpperCase()} in ${fmtSeconds(e.seconds)}`, e.status === "done" ? "l-ok" : "l-err");
     const live = state.live;
     state.live = false;
@@ -437,6 +484,44 @@ function handle(event) {
     if (fresh) state.reply = state.reply ? state.reply.then(() => (state.runId === run ? speak(fresh) : null)) : speak(fresh);
   }
   else if (!state.live) state.ended = true;
+}
+/* Judge: an LLM grades a finished response (skills.JudgeSkill). The button is on the card; the scorecard is in the
+   left panel's Judge section, and the judgement is saved in MongoDB. */
+function addJudgeButton(card, runId) {
+  let foot = [...card.querySelectorAll(":scope > .answer-foot")].pop();
+  if (!foot) { foot = el("div", { class: "answer-foot" }); card.append(foot); }   // Shorts cards have no footer of their own
+  const button = el("button", { type: "button", class: "judge-btn", title: "Have the model that answered grade this response",
+    onclick: () => judgeRun(runId, card, button) }, "⚖ Judge");
+  foot.append(button);
+}
+async function judgeRun(runId, card, button) {
+  if (!state.ended) return toast("A run is already in progress.", "info");
+  stopSpeaking();
+  state.judgeTarget = card; state.judgeButton = button;
+  try {
+    const { run_id } = await api("/api/runs", { method: "POST", headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ skill: "judge", request: { run_id: runId } }) });
+    follow(run_id);
+  } catch (error) { state.judgeTarget = state.judgeButton = null; toast(error.message); }
+}
+function startJudgeCard(e) {   // the judge's scorecard goes in the left panel; the graded card stays where it is
+  state.asked = "";
+  const target = state.judgeTarget?.isConnected ? state.judgeTarget : null;
+  state.judgeTarget = null;
+  if (!target) state.judgeButton = null;
+  document.querySelectorAll(".msg-ai.judged").forEach((card) => card.classList.remove("judged"));
+  target?.classList.add("judged");
+  const question = (e.request.question || "").replace(/^Judge: /, "");
+  state.card = el("div", { class: "judge" },   // two children (heading, pending), like a dialogue card: see working()
+    el("div", { class: "judge-top" },
+      el("div", { class: "judge-what" }, el("span", { class: "who", text: "⚖ JUDGING" }),
+        target ? el("button", { type: "button", class: "judge-link", title: "Show the graded response",
+          onclick: () => target.scrollIntoView({ behavior: "smooth", block: "center" }) }, "show ↗") : null),
+      el("p", { class: "judge-q", dir: "auto", text: question })),
+    el("div", { class: "pending" }, el("i"), el("i"), el("i"), el("span", { text: "Judging" })));
+  els.judge.replaceChildren(state.card);
+  if (!target && !state.live) els.feed.append(el("div", { class: "msg-ai" }, el("span", { class: "who", text: "JARVIS · JUDGE" }),
+    el("p", { class: "claim", dir: "auto", text: `Judged: ${question} (the scorecard is in the Judge panel)` })));
 }
 /* Feedback: rate the response, or tick what went wrong (slow, wrong behavior, ...). Saved with the run. */
 function feedbackText(fb) {
@@ -562,7 +647,47 @@ function toggleSource(item, chip, src, id) {
   item.append(el("div", { class: "source", "data-id": id, dir: "auto" },
     src ? src.text : "This chunk was not sent to the model — the citation is invalid.", el("span", { class: "src-meta", text: meta })));
 }
+/* ---------------- evidence: chunk popup ---------------- */
+let chunkPop = null;   // { node, anchor } of the open popup
+function closeChunk() {
+  if (!chunkPop) return;
+  chunkPop.anchor.classList.remove("open");
+  chunkPop.node.remove();
+  chunkPop = null;
+}
+function openChunk(anchor, r) {   // a small popup next to the Evidence item, with the chunk's text
+  const same = chunkPop?.anchor === anchor;
+  closeChunk();
+  if (same) return;   // a second click on the same item closes it
+  const meta = [r.source, `${r.document_id} v${r.version}`, r.meeting_date, r.project_id, r.status,
+                `score ${r.score.toFixed(4)}`, r.chunk_id].filter(Boolean).join(" · ");
+  const node = el("div", { class: "chunk-pop", role: "dialog", "aria-label": `Chunk #${r.rank}` },
+    el("div", { class: "chunk-pop-head" },
+      el("strong", { dir: "auto", text: `#${r.rank} ${r.title || r.document_id}` }),
+      el("button", { type: "button", class: "chunk-close", title: "Close (Esc)", "aria-label": "Close", text: "✕", onclick: closeChunk })),
+    el("div", { class: "chunk-pop-text", dir: "auto", text: r.text || "The chunk text was not saved with this run." }),
+    el("span", { class: "src-meta", text: meta }));
+  document.body.append(node);
+  anchor.classList.add("open");
+  chunkPop = { node, anchor };
+  const box = anchor.getBoundingClientRect(), w = node.offsetWidth, h = node.offsetHeight, gap = 10;
+  let left = box.left - w - gap, top = box.top;      // to the left of the item (Evidence is on the right)
+  if (left < 8) { left = Math.min(Math.max(8, box.left), innerWidth - w - 8); top = box.bottom + gap; }   // no room: below it
+  node.style.left = `${left}px`;
+  node.style.top = `${Math.max(8, Math.min(top, innerHeight - h - 8))}px`;
+  node.querySelector(".chunk-close").focus({ preventScroll: true });
+}
+document.addEventListener("click", (e) => {
+  if (chunkPop && !chunkPop.node.contains(e.target) && !chunkPop.anchor.contains(e.target)) closeChunk();
+});
+document.addEventListener("keydown", (e) => {
+  if (e.key === "Escape" && chunkPop) { const anchor = chunkPop.anchor; closeChunk(); anchor.focus(); }
+});
+document.addEventListener("scroll", (e) => { if (chunkPop && !chunkPop.node.contains(e.target)) closeChunk(); }, true);   // any panel scrolls
+addEventListener("resize", closeChunk);
+
 function resetTelemetry() {
+  closeChunk();
   els.stages.replaceChildren(el("li", { class: "muted", text: "Starting…" }));
   els.evidence.replaceChildren(el("p", { class: "muted", text: "Retrieved chunks appear here." }));
   els.evidenceMeta.textContent = "";
