@@ -7,7 +7,7 @@ starting point for a Jarvis-style assistant.
 
 Step-by-step guide with screenshots: [RUNNING.md](RUNNING.md).
 
-From the `session-5/jarvis-rag` folder, with the Ollama app running:
+From the `jarvis` folder (at the root of the repository), with the Ollama app running:
 
 ```
 python -m pip install pymongo faster-whisper     # once
@@ -179,7 +179,7 @@ browser (static/)  --POST /api/runs-->  server.py --> RunManager (runs.py) --> S
 * `runs.py` – a run is an ordered list of events; live viewers follow it, finished runs are saved.
 * `status.py` – health checks (never returns URIs or keys).
 * `mcp_client.py` – Jarvis's MCP client (standard library only): one long-lived stdio connection per server in
-  `session-5/.mcp.json`, shared by the skills. A server starts on first use, is restarted if it died, and stops with
+  `jarvis/.mcp.json`, shared by the skills. A server starts on first use, is restarted if it died, and stops with
   Jarvis. `call_tool(server, tool, arguments)`, `list_tools(server)`, `servers()`.
 * `voice.py` – local Whisper speech-to-text.
 * `tts.py` – text-to-speech: streamed neural voices (edge-tts), local MMS-TTS fallback (Hebrew, English).

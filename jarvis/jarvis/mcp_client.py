@@ -1,6 +1,6 @@
 """MCP client for Jarvis: one long-lived stdio connection per MCP server, shared by every skill.
 
-The servers come from session-5/.mcp.json (the same file Claude Code reads). Each one is started on first use and
+The servers come from jarvis/.mcp.json (the same file Claude Code reads). Each one is started on first use and
 then kept running, so yt-dlp / Pillow load once, not on every tool call. A server that died is restarted once.
 Everything closes when Jarvis exits.
 
@@ -24,7 +24,7 @@ import threading  # reader threads, locks
 import time  # timeouts
 from pathlib import Path  # paths in .mcp.json
 
-ROOT = Path(__file__).resolve().parents[2]  # session-5/: paths in .mcp.json are relative to it
+ROOT = Path(__file__).resolve().parents[1]  # the jarvis/ folder: paths in .mcp.json are relative to it
 CONFIG = ROOT / ".mcp.json"
 PROTOCOL_VERSION = "2025-11-25"
 CONNECT_TIMEOUT = 60  # starting a server (imports, first run of a venv) can take a while

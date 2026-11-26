@@ -899,7 +899,7 @@ class McpClient(unittest.TestCase):  # mcp_client.py against the fake server abo
             client.list_tools("broken")
 
     def test_servers_come_from_mcp_json_with_their_venv(self):
-        self.assertEqual(self.mcp.servers(), ["youtube-shorts", "memes"])  # session-5/.mcp.json
+        self.assertEqual(self.mcp.servers(), ["youtube-shorts", "memes"])  # jarvis/.mcp.json
         argv, cwd, _ = self.mcp.resolve(self.spec, self.root)
         self.assertEqual((argv, Path(cwd)), ([sys.executable, str(self.root / "fake" / "server.py")], self.root / "fake"))
         venv = self.root / "fake" / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
