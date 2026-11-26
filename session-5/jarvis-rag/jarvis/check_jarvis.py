@@ -613,7 +613,7 @@ class JarvisServer(unittest.TestCase):
         code, raw, _ = self.request("/api/status?force=1", timeout=90)  # an unreachable Atlas takes ~30 s to time out
         self.assertEqual(code, 200)
         data = json.loads(raw)
-        self.assertEqual(set(data["systems"]), {"ollama", "atlas", "anthropic", "vault", "index", "voice", "tts"})
+        self.assertEqual(set(data["systems"]), {"ollama", "atlas", "anthropic", "gemini", "vault", "index", "voice", "tts"})
         text = raw.decode("utf-8")
         for marker in ("mongodb+srv://", "mongodb://", "sk-ant-", "password", ".mongodb.net"):
             self.assertNotIn(marker, text)

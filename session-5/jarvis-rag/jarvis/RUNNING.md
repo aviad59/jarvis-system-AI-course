@@ -18,6 +18,7 @@ them in **MongoDB Atlas** (a cloud database) instead
 | MongoDB Atlas credentials file (optional, only for **Vectors from: mongodb**) | the chunk vectors are stored and searched there | `exercise-1-indexing/atlas-credentials.env` exists |
 | Microphone (optional) | voice questions | — |
 | Anthropic API key (optional) | only if you choose **Answer with: anthropic** | — |
+| Gemini API key (optional) | only if you choose **Answer with: gemini** | — |
 
 ## 2. One-time setup
 
@@ -56,6 +57,13 @@ MONGODB_URI=mongodb+srv://...
 
 ```
 ANTHROPIC_API_KEY=sk-ant-...
+```
+
+**(Optional) Gemini.** To be able to answer with Google Gemini, add a key from
+[Google AI Studio](https://aistudio.google.com/apikey) to the same `.env` file (`GOOGLE_API_KEY` also works):
+
+```
+GEMINI_API_KEY=...
 ```
 
 ## 3. Start the server
@@ -169,8 +177,8 @@ $env:JARVIS_WHISPER_MODEL_HE = "ivrit-ai/whisper-large-v3-turbo-ct2"
 
 | Option | Default | What it does |
 |---|---|---|
-| Answer with | `ollama` | `anthropic` sends the question and retrieved chunks to Claude (needs the key) |
-| Model | empty | override the model; empty = `gemma3:4b` / `claude-opus-5-5` |
+| Answer with | `ollama` | `anthropic` sends the question and retrieved chunks to Claude, `gemini` to Google Gemini (each needs its key) |
+| Model | empty | override the model; empty = `gemma3:4b` / `claude-opus-5-5` / `gemini-3.8-flash` |
 | Vectors from | `local` | `local` reads `exercise-1-indexing/build/index.json`; `mongodb` uses Atlas |
 | Hybrid (BM25 + RRF) | off | combine vector and keyword search |
 | Skip indexing | on | reuse the existing index; uncheck to re-chunk and re-embed first |
@@ -193,7 +201,7 @@ Environment variables (set them before `python jarvis/server.py`):
 | Atlas red / "Atlas connection failed" | check the credentials file and the Atlas Network Access list, or switch **Vectors from** back to `local` |
 | "Installed model changed" | `embeddinggemma` was re-pulled; uncheck **Skip indexing** and ask again |
 | Voice error naming a Python path | install the missing package into exactly that Python |
-| `ANTHROPIC_API_KEY is not set` | switch **Answer with** back to `ollama`, or add the `.env` file |
+| `ANTHROPIC_API_KEY is not set` / `GEMINI_API_KEY is not set` | switch **Answer with** back to `ollama`, or add the `.env` file |
 
 ## 11. Tests
 

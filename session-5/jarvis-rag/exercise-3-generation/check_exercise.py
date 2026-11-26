@@ -55,6 +55,26 @@ class Core(unittest.TestCase):  # בדיקות הליבה בודקות הרכב�
         with patch.dict(os.environ, {"ANTHROPIC_API_KEY": "fake-only"}), patch("runtime.post_json", return_value={"stop_reason": "refusal", "content": []}):  # תשובת סירוב מדומה.
             with self.assertRaises(ValueError):  # מצפים לעצירה מפורשת.
                 runtime.generate({"question": "q", "sources": []}, "anthropic", "test-model", "https://example.invalid/v1", 1, "unused")  # אין רשת.
+    def test_gemini_mock(self):  # בודקים את מבנה generateContent ללא גישה לחשבון אמיתי.
+        response = {"candidates": [{"finishReason": "STOP", "content": {"role": "model", "parts": [{"text": "thinking", "thought": True}, {"text": json.dumps(ANSWER)}]}}]}  # תשובת HTTP מדומה.
+        with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-only"}), patch("runtime.post_json", return_value=response) as post:  # אין קריאה לרשת ואין קריאה של מפתח אמיתי.
+            answer, seconds = runtime.generate({"question": "q", "sources": []}, "gemini", "test-model", "https://example.invalid/v1beta", 1, "unused")  # מפעילים רק את מסלול הפענוח.
+            self.assertEqual(answer, ANSWER)  # חלקי thought אינם חלק מהתשובה.
+            self.assertEqual(post.call_args.args[0], "https://example.invalid/v1beta/models/test-model:generateContent")  # הנתיב מתאים ל־generateContent.
+            self.assertEqual(post.call_args.args[2], {"x-goog-api-key": "fake-only"})  # המפתח נשלח בכותרת, לא בכתובת.
+            config = post.call_args.args[1]["generationConfig"]  # Structured Output לפי אותה סכמה.
+            self.assertEqual((config["responseMimeType"], config["responseJsonSchema"]), ("application/json", runtime.SCHEMA))
+            self.assertIn("systemInstruction", post.call_args.args[1])  # ההנחיות נשלחות בנפרד מהמקורות.
+    def test_gemini_blocked_or_cut(self):  # חסימה, סירוב או פלט שנקטע אינם מוצגים כתשובה.
+        for response in ({"promptFeedback": {"blockReason": "SAFETY"}}, {"candidates": [{"finishReason": "SAFETY"}]}, {"candidates": [{"finishReason": "MAX_TOKENS", "content": {"parts": [{"text": "{"}]}}]}):  # שלוש תשובות מדומות.
+            with patch.dict(os.environ, {"GEMINI_API_KEY": "fake-only"}), patch("runtime.post_json", return_value=response):
+                with self.assertRaises(ValueError):  # מצפים לעצירה מפורשת.
+                    runtime.generate({"question": "q", "sources": []}, "gemini", "test-model", "https://example.invalid/v1beta", 1, "unused")
+    def test_gemini_needs_key(self):  # אין פנייה לענן בלי מפתח.
+        with patch.dict(os.environ, {"GEMINI_API_KEY": ""}), patch("runtime.post_json") as post:
+            with self.assertRaises(ValueError):
+                runtime.generate({}, "gemini", "test-model", "https://example.invalid/v1beta", 1, "unused")
+            post.assert_not_called()
     def test_ollama_mock(self):  # בודקים את מבנה Native Ollama ללא שרת מקומי.
         with patch("runtime.post_json", return_value={"done": True, "message": {"content": json.dumps(ANSWER)}}) as post:  # מחליפים את כל פעולת ה־HTTP.
             answer, seconds = runtime.generate({}, "ollama", "test-model", "http://example.invalid", 1, "unused")  # התשובה מגיעה מה־mock בלבד.

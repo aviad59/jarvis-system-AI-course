@@ -28,5 +28,5 @@ The MCP servers need their own one-time setup; see the README in each folder.
 ## Secrets
 
 API keys and database credentials stay in git-ignored `.env` files and are never committed:
-`session-5/jarvis-rag/.env` (`ANTHROPIC_API_KEY=...`) and
+`session-5/jarvis-rag/.env` (`ANTHROPIC_API_KEY=...` and/or `GEMINI_API_KEY=...`) and
 `session-5/jarvis-rag/exercise-1-indexing/atlas-credentials.env` (MongoDB Atlas).

@@ -77,11 +77,39 @@ def generate(context, provider, model, endpoint, timeout, fixture):  # מבקש�
         if response.get("stop_reason") != "end_turn":  # למשל max_tokens: הפלט נקטע ואינו תשובה מלאה.
             raise ValueError("Anthropic response incomplete (stop_reason=" + str(response.get("stop_reason")) + ")")  # במצב זה בודקים מגבלות וסיבת עצירה.
         raw = "".join(block["text"] for block in response.get("content", []) if block.get("type") == "text")  # בוחרים רק מקטעי text; מקטעי thinking אינם חלק מהתשובה.
+    elif provider == "gemini":  # במסלול Gemini נשלחת קריאת API אמיתית בענן (Google Gemini generateContent).
+        key = os.environ.get("GEMINI_API_KEY")  # קוראים את המפתח מהסביבה ולא שומרים אותו בפלט.
+        if not key:  # אין פנייה לענן בלי מפתח שהוגדר במפורש.
+            raise ValueError("Set GEMINI_API_KEY before selecting gemini")  # מציגים את שם משתנה הסביבה, בלי להציג את ערכו.
+        raw = gemini_text(post_json(endpoint.rstrip("/") + "/models/" + model + ":generateContent", gemini_payload(system, user_text, SCHEMA, 16000), {"x-goog-api-key": key}, timeout))  # המפתח נשלח בכותרת x-goog-api-key ולא בכתובת, כדי שלא יופיע ביומנים.
     else:  # מסלול לא מוכר מעיד על שגיאת הגדרה.
         raise ValueError("Unknown provider")  # אין מעבר אוטומטי לספק אחר שעשוי לשלוח מידע לענן.
     answer = json.loads(raw)  # JSON שאינו תקין מעלה שגיאה ונעצר לפני יצירת הדו״ח.
     validate_answer(answer)  # בודקים את המבנה גם כאשר הספק התבקש להחזיר Structured Output.
     return answer, round(time.perf_counter() - started, 4)  # מחזירים את התשובה ואת משך הבקשה בשניות, מעוגל לארבע ספרות.
+
+def gemini_payload(system, user_text, schema, max_tokens, temperature=None):  # בקשת generateContent עם Structured Output לפי JSON Schema.
+    config = {"responseMimeType": "application/json", "responseJsonSchema": schema, "maxOutputTokens": max_tokens}  # responseJsonSchema מקבל JSON Schema רגיל, כולל additionalProperties.
+    if temperature is not None:  # בלי ערך מפורש נשארת ברירת המחדל של הדגם.
+        config["temperature"] = temperature
+    payload = {"contents": [{"role": "user", "parts": [{"text": user_text}]}], "generationConfig": config}  # ב־Gemini התפקיד של העוזר נקרא model ותוכן ההודעה נמצא ב־parts.
+    if system:  # הנחיות המערכת נשלחות בשדה נפרד, לא כהודעת משתמש.
+        payload["systemInstruction"] = {"parts": [{"text": system}]}
+    return payload
+
+def gemini_text(response):  # שולפים את טקסט התשובה מתגובת generateContent, או עוצרים עם סיבה ברורה.
+    blocked = (response.get("promptFeedback") or {}).get("blockReason")  # הבקשה כולה נחסמה לפני יצירת תשובה.
+    if blocked:
+        raise ValueError("Gemini blocked this request (" + str(blocked) + ")")  # חסימה אינה מוצגת כממצא המבוסס על מקור.
+    candidates = response.get("candidates") or []  # בלי מועמד אין תשובה.
+    if not candidates:
+        raise ValueError("Gemini returned no answer")
+    reason = candidates[0].get("finishReason")  # STOP היא סיום רגיל; MAX_TOKENS פירושו פלט שנקטע.
+    if reason == "MAX_TOKENS":
+        raise ValueError("Gemini response incomplete (finishReason=MAX_TOKENS)")
+    if reason != "STOP":  # למשל SAFETY או RECITATION: המודל סירב או נעצר.
+        raise ValueError("Model refused this request (finishReason=" + str(reason) + ")")
+    return "".join(part.get("text", "") for part in (candidates[0].get("content") or {}).get("parts", []) if not part.get("thought"))  # מדלגים על חלקי thought; הם אינם חלק מהתשובה.
 
 def validate_answer(answer):  # בודקים מבנה והפניות חסרות; בדיקה זו אינה בודקת אמיתות של טענות.
     if not isinstance(answer, dict) or set(answer) != {"claims", "missing_information"}:  # דורשים בדיוק את שני השדות שהוגדרו בסכמה.
