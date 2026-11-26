@@ -251,9 +251,16 @@ class Handler(BaseHTTPRequestHandler):
                 return
 
 
+class Server(ThreadingHTTPServer):
+    def handle_error(self, request, client_address):  # a browser dropping an idle keep-alive socket is not an error
+        if isinstance(sys.exception(), (BrokenPipeError, ConnectionResetError, ConnectionAbortedError)):
+            return
+        super().handle_error(request, client_address)
+
+
 def make_server(host, port, data_dir=None):
     Handler.manager = RunManager(skills.SKILLS, data_dir) if data_dir else RunManager(skills.SKILLS)
-    server = ThreadingHTTPServer((host, port), Handler)
+    server = Server((host, port), Handler)
     server.daemon_threads = True  # Ctrl+C doesn't wait for open event streams
     return server
 
