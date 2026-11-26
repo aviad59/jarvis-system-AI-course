@@ -15,7 +15,7 @@ API
   POST /api/runs/<id>/cancel          stop the running stage
   POST /api/runs/<id>/feedback        {rating?: good|bad, issues?: [ids], comment?} -> {feedback} (run must have ended)
   GET  /api/feedback                  {issues: [{id, label}], reports: [newest first]}
-  POST /api/songs/check               {ids: [song ids]} -> {status, songs, message} (music MCP server, get_song)
+  POST /api/songs/check               {ids: [song ids]} -> {status, songs, message, log} (music MCP server, get_song)
   POST /api/transcribe?language=he    raw audio body -> {text, ...} via local Whisper
   POST /api/speak                     {text, language?} -> whole clip: audio/mpeg (neural voice) or audio/wav (local MMS)
   POST /api/speak/prepare             {text, language?} -> {id, engine}; then

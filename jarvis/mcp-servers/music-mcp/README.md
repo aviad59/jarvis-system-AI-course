@@ -48,4 +48,6 @@ Claude Code alone could also add Suno directly (`claude mcp add --transport http
 `music` in `jarvis/.mcp.json` serves both Claude Code and Jarvis.
 
 `python check_server.py` runs the tests against a fake supplier (no network).
+Logs: each tool call, supplier call, wait progress and error goes to stderr (`music: ...`), which Jarvis shows in
+the Mission log (also for the song card's "Check again"). The log has names, sizes, ids and timings, never your text.
 Privacy: what you describe (and any lyrics) is sent to the supplier. The token never leaves this folder.

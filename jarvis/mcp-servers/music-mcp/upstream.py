@@ -10,6 +10,8 @@ Only https URLs: the token must never travel in clear text.
 import contextlib
 import json
 import os
+import sys
+import time
 from pathlib import Path
 from urllib.parse import urlsplit
 
@@ -17,6 +19,12 @@ HERE = Path(__file__).resolve().parent
 CONFIG = HERE / "suppliers.json"
 AUTH_KINDS = ("oauth", "bearer", "none")
 LOGIN_HINT = "run `python login.py` in jarvis/mcp-servers/music-mcp once (it opens the browser to sign in)"
+
+
+def log(message):
+    """One line of the server's log. stderr, because stdout is the MCP channel: Jarvis shows these lines in the Mission
+    log, Claude Code in its MCP logs. Never arguments' text, never tokens: names, counts, ids, timings and errors."""
+    print(f"music: {message}", file=sys.stderr, flush=True)
 
 
 class NotSignedIn(Exception):  # the message is safe to show
@@ -58,7 +66,8 @@ def supplier(env=None, config=None) -> dict:
     if not isinstance(ops, dict):
         raise ValueError("suppliers.json: ops must be an object")
     return {"key": key, "name": str(entry.get("name") or key), "url": _https(env.get("MUSIC_MCP_URL") or entry.get("url")),
-            "auth": auth, "token": token, "ops": ops, "site": str(entry.get("site") or "")}
+            "auth": auth, "token": token, "ops": ops, "site": str(entry.get("site") or ""),
+            "embed": str(entry.get("embed") or "") or None}
 
 
 # ---------------------------------------------------------------- sign-in (OAuth)
@@ -200,18 +209,27 @@ class Upstream:
         if not self.connect and not interactive and not await signed_in(entry):
             raise NotSignedIn(f"Not signed in to {entry['name']}: {LOGIN_HINT}")
         client = self.connect() if self.connect else make_client(entry, interactive)
+        started = time.monotonic()
+        log(f"connecting to {entry['name']} ({entry['url']}, sign-in: {entry['auth']})")
+        connected = False
         try:
             async with client:
+                connected = True
+                log(f"connected to {entry['name']} in {time.monotonic() - started:.1f}s")
                 yield client
         except (NotSignedIn, SupplierError, ValueError):
             raise
         except Exception as error:
-            raise explain(error, entry) from None
+            failure = explain(error, entry)
+            if not connected:
+                log(f"couldn't connect to {entry['name']}: {failure}")
+            raise failure from None
 
     async def list_tools(self, client):
         url = self.config()["url"]
         if self.tools["list"] is None or self.tools["url"] != url:
             found = await client.list_tools()
+            log(f"{self.config()['name']} offers {len(found)} tools: {', '.join(t.name for t in found)}")
             self.tools.update(url=url, list=[{"name": t.name, "description": t.description or "",
                                               "input_schema": getattr(t, "input_schema", None) or {}} for t in found])
         return self.tools["list"]

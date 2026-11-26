@@ -4,6 +4,8 @@ No network: a fake supplier (a FastMCP server with Suno-like tools) is reached i
 called through a real MCP client, the way Jarvis and Claude Code call it.
 """
 import asyncio
+import contextlib
+import io
 import logging
 import os
 import sys
@@ -89,6 +91,21 @@ class Supplied(unittest.TestCase):  # our server against the fake supplier, thro
                          ("https://cdn.fake.example/c1.mp3", "Monday Blues", 121.4, "lofi"))
         self.assertEqual(state["calls"][0], ("generate_music", {"prompt": "monday meetings", "tags": "lo-fi", "make_instrumental": True}))
         self.assertEqual(state["calls"][1], ("get_music_status", {"ids": ["c1", "c2"]}))  # all at once: the schema takes a list
+
+    def test_the_log_has_each_step_but_not_the_text(self):  # stderr: Jarvis's Mission log
+        supplier, _ = fake_supplier()
+        self.use(supplier)
+        caught = io.StringIO()
+        with contextlib.redirect_stderr(caught):
+            self.call("create_song", description="monday meetings", lyrics="[Verse] secret words", title="Blues")
+        log = caught.getvalue()
+        for step in ("music: create_song (description 15 chars, lyrics 20 chars, title 5 chars", "connected to FakeTunes",
+                     "create_song -> FakeTunes generate_music(", "generate_music answered in", "waiting up to 5s for 2 songs",
+                     "2 songs: 2 ready", "create_song done in"):
+            self.assertIn(step, log)
+        for private in ("monday", "secret", "Blues"):
+            self.assertNotIn(private, log)
+        self.assertLess(log.count("get_music_status"), 2)  # the polls while waiting aren't logged one by one
 
     def test_suno_answer_with_advice_after_the_json(self):  # audio-create: JSON, then "Call audio-wait once with all of them"
         supplier, state = fake_supplier()
@@ -232,11 +249,21 @@ class Mapping(unittest.TestCase):
 
 
 class Normalize(unittest.TestCase):
-    def test_clip_ids_and_song_url(self):  # Suno: creation answers clip ids; a clip plays at its song_url
+    def test_clip_ids_and_song_url(self):  # Suno: creation answers clip ids; its song_url is the song's web page
         pending = normalize.songs({"clip_ids": ["c1", "c2"], "status": "submitted"})
         self.assertEqual([(s["id"], s["status"], s["ready"]) for s in pending], [("c1", "pending", False), ("c2", "pending", False)])
         clip = normalize.songs({"clips": [{"id": "c1", "status": "streaming", "song_url": "https://cdn.example/c1"}]})[0]
         self.assertEqual((clip["audio_url"], clip["ready"]), ("https://cdn.example/c1", True))
+        page = {"clips": [{"id": "c1", "status": "streaming", "song_url": "https://suno.com/song/c1"}]}
+        clip = normalize.songs(page)[0]   # a web page isn't audio: an <audio> player shows 0:00 and can't play it
+        self.assertEqual((clip["audio_url"], clip["page_url"], clip["ready"]), (None, "https://suno.com/song/c1", False))
+        embed = upstream.supplier({}, None)["embed"]   # suppliers.json: Suno's embeddable player, by song id
+        clip = normalize.songs(page, "", embed)[0]
+        self.assertEqual((clip["audio_url"], clip["embed_url"], clip["page_url"], clip["ready"]),
+                         (None, "https://suno.com/embed/c1", "https://suno.com/song/c1", True))
+        waiting = normalize.songs({"clip_ids": ["c1"], "status": "submitted"}, "", embed)[0]
+        self.assertEqual((waiting["embed_url"], waiting["ready"]), (None, False))   # no player before it plays
+        self.assertIsNone(normalize.songs({"clips": [{"id": "../x", "status": "complete", "title": "X"}]}, "", embed)[0]["embed_url"])
 
     def test_songs_in_any_shape(self):
         data = {"result": {"songs": [{"clipId": "a", "status": "Complete", "streamAudioUrl": "https://x.example/a",
