@@ -213,7 +213,8 @@ JSON:"""
 
 def describe(tool, live=None):  # live(server, tool) -> description from the MCP server, or None
     text = live(tool["server"], tool["tool"]) if live and tool.get("server") else None
-    return " ".join(str(text or tool["description"]).split())[:300]
+    text = " ".join(str(text or tool["description"]).split())
+    return re.split(r"(?<=[.!?])\s", text, maxsplit=1)[0][:200]  # what it does; its parameters don't help to choose
 
 
 def tool_prompt(text, history=(), live=None):

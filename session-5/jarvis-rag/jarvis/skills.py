@@ -15,6 +15,7 @@ Event types the console understands (add new ones in app.js -> handlers):
 To add a skill: subclass Skill, implement stages() and run(), and add an instance to SKILLS.
 """
 import json  # read pipeline output files
+import os  # JARVIS_ROUTER
 import runs  # log line limit
 import sys  # Python executable for child processes
 import re  # tidy a search query

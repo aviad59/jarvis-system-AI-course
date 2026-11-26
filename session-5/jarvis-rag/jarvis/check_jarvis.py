@@ -345,7 +345,7 @@ class JarvisServer(unittest.TestCase):
                                     lambda server, tool: "LIVE " + tool if server == "memes" else None)
         self.assertIn("Request: and him?", prompt)
         self.assertIn("Previous answer: Idan", prompt)
-        self.assertIn("make_meme(input: what the meme is about): LIVE generate_meme", prompt)  # the MCP server's own words
+        self.assertIn("make_meme(input: what the meme is about): LIVE generate_meme\n", prompt)  # the MCP server's own words
         self.assertIn("Search YouTube Shorts by keyword", prompt)  # no live text: the catalog's
 
         calls, replies = [], []
