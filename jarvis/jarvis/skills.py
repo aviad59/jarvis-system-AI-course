@@ -14,12 +14,14 @@ Event types the console understands (add new ones in app.js -> handlers):
 
 To add a skill: subclass Skill, implement stages() and run(), and add an instance to SKILLS.
 """
+import datetime  # when a judgement was saved
 import json  # read pipeline output files
 import os  # JARVIS_ROUTER
 import runs  # log line limit
 import sys  # Python executable for child processes
 import re  # tidy a search query
 import mcp_client  # one shared, long-lived connection per MCP server (.mcp.json)
+import judge  # LLM as a judge: criteria, prompt, scores
 import urllib.request  # ask the answer model for a search query
 import time  # stage timing
 from pathlib import Path  # paths to the MCP server
@@ -34,6 +36,8 @@ LAST_INDEX = {"documents": "vault", "source": "local"}  # what the last question
 class Skill:
     name = title = description = ""
     options = []  # [{'key', 'label', 'type': 'bool'|'int'|'select'|'text', 'default', ...}]
+    listed = True  # shown in the console's skill picker
+    manager = None  # the RunManager (set by it): lets a skill read other runs
 
     def validate(self, request):  # normalize request values using the declared options
         if not isinstance(request, dict):
@@ -156,7 +160,7 @@ class RagSkill(Skill):
         run.emit("answer", claims=report["answer"]["claims"], missing_information=report["answer"]["missing_information"],
                  sources=report["context"]["sources"], citation_status=report["citation_status"],
                  invalid_source_ids=report["invalid_source_ids"], provider=report["provider"], model=report["model"],
-                 seconds=report["seconds"])
+                 seconds=report["seconds"], question=report["context"].get("question"))
 
 
 class VaultSyncSkill(Skill):  # started by the vault watcher (vault_watch.py) when notes change; also runnable by hand
@@ -291,7 +295,7 @@ QUERY_PROMPT = ("Turn an answer into a YouTube search.\n\n"
 GEMINI_API = "https://generativelanguage.googleapis.com/v1beta"
 
 
-def ask_json(prompt, schema, provider, model, timeout=90, temperature=0, num_predict=None, strict=True):
+def ask_json(prompt, schema, provider, model, timeout=90, temperature=0, num_predict=None, strict=True, max_tokens=300):
     """One small structured call to the answer model; returns the parsed JSON. ValueError if its API key is missing.
 
     strict=False (Ollama only): no "format" in the request, the JSON is read from the reply text. Any format turns off
@@ -300,7 +304,7 @@ def ask_json(prompt, schema, provider, model, timeout=90, temperature=0, num_pre
     key = next(iter(rag.provider_env(provider).values()), "")
     if provider == "anthropic":
         url, headers = "https://api.anthropic.com/v1/messages", {"x-api-key": key, "anthropic-version": "2026-10-21"}
-        payload = {"model": model, "max_tokens": 300, "messages": [{"role": "user", "content": prompt}],
+        payload = {"model": model, "max_tokens": max_tokens, "messages": [{"role": "user", "content": prompt}],
                    "output_config": {"format": {"type": "json_schema", "schema": schema}}}
     elif provider == "gemini":  # the key goes in a header, never in the URL
         url, headers = f"{GEMINI_API}/models/{model}:generateContent", {"x-goog-api-key": key}
@@ -821,9 +825,122 @@ class JarvisSkill(Skill):  # one input for everything: the model (or router.py's
         SKILLS["shorts"].run({**target["shorts"], "question": query}, run)  # 3. the MCP tool
 
 
-SKILLS = {skill.name: skill for skill in (JarvisSkill(), RagSkill(), ShortsSkill(), MemeSkill(), VaultSyncSkill(), StatusSkill())}
+class JudgeSkill(Skill):  # LLM as a judge: grade a finished run with the model that answered it (judge.py)
+    name, title = "judge", "Judge a response"
+    description = "Grade a finished response: backed by its sources, right citations, right tool, complete, language."
+    needs_question = False
+    listed = False  # started from a result card's Judge button, with that run's id
+    JUDGEABLE = {"jarvis", "rag", "shorts", "meme"}
+    TIMEOUT = 180
+
+    def validate(self, request):
+        if not isinstance(request, dict):
+            raise ValueError("Request must be an object")
+        run_id = str(request.get("run_id") or "")
+        if not re.fullmatch(r"[0-9A-Za-z-]{1,64}", run_id):
+            raise ValueError("Which response? Send its run_id")
+        target = self.manager.get(run_id) if self.manager else None
+        if not target:
+            raise ValueError(f"Run {run_id} not found")
+        if target.status == "running":
+            raise ValueError("The run is still going: judge it when it ends")
+        data = target.to_json()
+        case = judge.case_from_run(data["events"], data["request"]) if data["summary"]["skill"] in self.JUDGEABLE else None
+        if target.status != "done" or not case:
+            raise ValueError("Nothing to judge here: only a finished answer, Shorts result or meme can be judged")
+        provider, model = self.judge_model(case, data["request"])
+        return {"run_id": run_id, "question": "Judge: " + (case["question"] or run_id)[:200], "case": case,
+                "criteria": judge.applicable(case), "provider": provider, "model": model,
+                "target_skill": data["summary"]["skill"]}
+
+    @staticmethod
+    def judge_model(case, request):  # the same model that answered: the answer's, else the one the run was asked to use
+        if case["answer"] and case["answer"]["provider"] in rag.PROVIDERS and case["answer"]["model"]:
+            return case["answer"]["provider"], case["answer"]["model"]
+        inner = (request.get("route") or {}).get("request") or {}
+        for source in (request, inner):
+            provider = source.get("provider") or source.get("captions_by")
+            if provider in rag.PROVIDERS:
+                return provider, (source.get("model") if source.get("provider") else None) or rag.DEFAULT_MODELS[provider]
+        return "ollama", rag.DEFAULT_MODELS["ollama"]
+
+    def stages(self, request):
+        return [{"id": "collect", "title": "Read the response"},
+                {"id": "judge", "title": f"Judge · {request['provider']} · {request['model']}"},
+                {"id": "save", "title": "Save to MongoDB"}]
+
+    COLLECTION = "judgements"  # in the same Atlas database as the chunk vectors (atlas-credentials.env)
+
+    @classmethod
+    def save(cls, document):  # one judgement -> MongoDB Atlas; returns "db.collection". Raises with a short, safe message
+        if str(rag.EX1) not in sys.path:
+            sys.path.append(str(rag.EX1))
+        import atlas_upload  # exercise 1's helpers: credentials lookup + connect (needs pymongo)
+        settings, problem = atlas_upload.atlas_settings(rag.EX1)
+        if problem:
+            raise LookupError(problem)
+        try:
+            client = atlas_upload.connect(settings["uri"])
+            try:
+                client[settings["db"]][cls.COLLECTION].replace_one({"_id": document["_id"]}, document, upsert=True)
+            finally:
+                client.close()
+        except Exception as error:  # never the URI or the cluster host
+            raise RuntimeError(status.atlas_error_detail(error, settings, atlas_upload.safe_error)) from None
+        return f"{settings['db']}.{cls.COLLECTION}"
+
+    def run(self, request, run):
+        case, ids = request["case"], request["criteria"]
+        run.emit("stage_start", stage="collect", title="Read the response")
+        answer = case["answer"]
+        what = (f"{len(answer['claims'])} claims, {len(answer['sources'])} sources" if answer else
+                "YouTube Shorts" if case["posts"] else "a meme")
+        run.emit("log", stage="collect", line=f"run {request['run_id']}: {what}; {len(case['tool_calls'])} tool call(s)")
+        run.emit("log", stage="collect", line="criteria: " + ", ".join(judge.CRITERIA[i][0] for i in ids))
+        run.emit("stage_end", stage="collect", status="ok", seconds=0)
+        run.emit("stage_start", stage="judge", title=f"Judge · {request['provider']} · {request['model']}")
+        started = time.time()
+        try:
+            reply = ask_json(judge.prompt(case, ids), judge.schema(case, ids), request["provider"], request["model"],
+                             timeout=self.TIMEOUT, num_predict=1500, max_tokens=2000)
+        except Exception as error:  # no key, model down, timeout, a reply that isn't JSON
+            run.check_cancelled()
+            run.emit("stage_end", stage="judge", status="error", seconds=round(time.time() - started, 2))
+            detail = str(error) if isinstance(error, ValueError) else f"{type(error).__name__}: {error} (is {request['provider']} reachable?)"
+            raise RuntimeError(f"Judge failed — {detail}") from None
+        run.check_cancelled()
+        seconds = round(time.time() - started, 2)
+        result = judge.score(case, ids, reply)
+        missing = sum(r["score"] is None for r in result["criteria"] if r["id"] in ids)
+        run.emit("log", stage="judge", line=f"overall {result['overall']}/5"
+                 + (f", {missing} criteria without a verdict" if missing else ""))
+        run.emit("stage_end", stage="judge", status="warning" if missing or result["overall"] is None else "ok",
+                 seconds=seconds)
+        run.emit("judgement", target_run=request["run_id"], question=case["question"], provider=request["provider"],
+                 model=request["model"], same_model=True, seconds=seconds, **result)
+        run.emit("stage_start", stage="save", title="Save to MongoDB")  # after the scorecard: a slow database never hides it
+        started = time.time()
+        document = {"_id": run.id, "judged_at": datetime.datetime.now(datetime.timezone.utc), "target_run": request["run_id"],
+                    "target_skill": request.get("target_skill"), "route": (case["route"] or {}).get("skill"),
+                    "question": case["question"], "answered_question": (answer or {}).get("question"),
+                    "provider": request["provider"], "model": request["model"], "same_model": True,
+                    "criteria_asked": ids, "seconds": seconds, **result}
+        try:
+            where = self.save(document)
+            run.emit("log", stage="save", line=f"saved to {where} (_id {run.id})")
+            run.emit("stage_end", stage="save", status="ok", seconds=round(time.time() - started, 2))
+            run.emit("judgement_saved", target_run=request["run_id"], saved_to=where)
+        except Exception as error:  # the scorecard still counts; only the database copy is missing
+            detail = str(error) or type(error).__name__
+            run.emit("log", stage="save", line=f"not saved to MongoDB: {detail}")
+            run.emit("stage_end", stage="save", status="warning", seconds=round(time.time() - started, 2))
+            run.emit("judgement_saved", target_run=request["run_id"], saved_to=None, error=detail)
+
+
+SKILLS = {skill.name: skill for skill in (JarvisSkill(), RagSkill(), ShortsSkill(), MemeSkill(), VaultSyncSkill(), StatusSkill(),
+                                          JudgeSkill())}
 
 
 def describe():  # what the console needs to draw the skill picker and its options
     return [{"name": s.name, "title": s.title, "description": s.description, "options": s.options,
-             "needs_question": getattr(s, "needs_question", True)} for s in SKILLS.values()]
+             "needs_question": getattr(s, "needs_question", True)} for s in SKILLS.values() if s.listed]

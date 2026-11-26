@@ -473,3 +473,48 @@ body[data-state="error"] .core { filter: drop-shadow(0 0 16px rgba(255, 79, 109,
 .meme { display: block; margin-top: 10px; max-width: min(100%, 520px); border: 1px solid var(--line); background: #000; }
 .meme img { display: block; width: 100%; height: auto; }
 .meme:hover { border-color: var(--cyan-bright); }
+
+/* ---------- Judge: an LLM grades a finished response. Button on the card, scorecard in the left panel ---------- */
+.judge-btn { cursor: pointer; padding: 2px 10px; background: transparent; border: 1px solid var(--gold); color: var(--gold); font: 600 11px var(--font-mono); }
+.judge-btn:hover { background: rgba(255, 207, 107, 0.12); box-shadow: 0 0 12px rgba(255, 207, 107, 0.4); }
+.judge-btn.ok { border-color: var(--ok); color: var(--ok); } .judge-btn.warn { border-color: var(--warn); color: var(--warn); }
+.judge-btn.err { border-color: var(--err); color: var(--err); }
+.msg-ai.judged { box-shadow: inset 3px 0 0 var(--gold); }
+.judge-board { max-height: 30vh; overflow-y: auto; padding-right: 4px; }
+.judge { display: grid; gap: 10px; }
+.judge.error .who { color: var(--err); }
+.judge-top { display: grid; gap: 4px; }
+.judge-what { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.judge .who { font: 700 10px var(--font-display); letter-spacing: 0.3em; color: var(--gold); }
+.judge-link { cursor: pointer; padding: 0 6px; background: transparent; border: 1px solid var(--line); color: var(--text-dim); font: 500 10.5px var(--font-mono); }
+.judge-link:hover { border-color: var(--gold); color: var(--gold); }
+.judge-q { margin: 0; font-family: var(--font-body); font-size: 13.5px; color: var(--text); overflow-wrap: anywhere; }
+.judge .claim { font-size: 13.5px; }
+.judge-head { display: flex; align-items: baseline; gap: 8px; }
+.judge-score { font: 700 30px var(--font-display); line-height: 1; }
+.judge-of { font: 600 13px var(--font-mono); color: var(--text-faint); }
+.judge-verdict { margin-inline-start: 6px; font: 700 11px var(--font-display); letter-spacing: 0.25em; text-transform: uppercase; }
+.judge-score.ok, .judge-verdict.ok, .jc-dots.ok, .judge-saved.ok { color: var(--ok); }
+.judge-score.warn, .judge-verdict.warn, .jc-dots.warn, .judge-saved.warn { color: var(--warn); }
+.judge-score.err, .judge-verdict.err, .jc-dots.err { color: var(--err); }
+.judge-score.na, .judge-verdict.na, .jc-dots.na { color: var(--text-faint); }
+.judge-criteria { list-style: none; margin: 0; padding: 0; display: grid; gap: 8px; }
+.jc { display: grid; grid-template-columns: minmax(0, 1fr) auto; gap: 2px 10px; align-items: baseline; }
+.jc-title { font: 600 12px var(--font-ui); letter-spacing: 0.06em; text-transform: uppercase; color: var(--text-dim); }
+.jc-dots { display: inline-flex; align-items: center; gap: 3px; }
+.jc-dots i { width: 8px; height: 8px; border: 1px solid currentColor; border-radius: 50%; opacity: 0.45; }
+.jc-dots i.on { background: currentColor; opacity: 1; }
+.jc-dots b { margin-inline-start: 5px; font: 600 11px var(--font-mono); }
+.jc-dots em { font: 500 11px var(--font-mono); font-style: normal; }
+.jc-reason { grid-column: 1 / -1; font-family: var(--font-body); font-size: 13px; color: var(--text); }
+.judge-claims { padding-top: 8px; border-top: 1px dashed var(--line); }
+.judge-claims h3 { margin: 0 0 6px; font: 700 10px var(--font-display); letter-spacing: 0.3em; color: var(--gold); }
+.judge-claims ul { list-style: none; margin: 0; padding: 0; display: grid; gap: 6px; }
+.jcl { display: flex; gap: 6px; font-family: var(--font-body); font-size: 13px; }
+.jcl-mark { flex: 0 0 auto; width: 16px; font-weight: 700; text-align: center; }
+.jcl.supported .jcl-mark { color: var(--ok); } .jcl.partial .jcl-mark { color: var(--warn); }
+.jcl.unsupported .jcl-mark { color: var(--err); } .jcl.none .jcl-mark { color: var(--text-faint); }
+.jcl-body { display: flex; flex-wrap: wrap; gap: 2px 8px; align-items: baseline; min-width: 0; overflow-wrap: anywhere; }
+.jcl-body .badge { font: 500 10.5px var(--font-mono); }
+.jcl-reason { flex: 1 1 100%; color: var(--text-dim); font-size: 12.5px; }
+.judge .answer-foot { margin-top: 0; gap: 4px 10px; }

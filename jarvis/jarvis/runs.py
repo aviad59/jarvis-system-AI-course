@@ -117,6 +117,9 @@ class Run:
             if event["type"] in ("message", "error"):
                 headline = event.get("text") or event.get("message", "")
                 break
+            if event["type"] == "judgement":
+                headline = f"Judge score {event.get('overall')}/5"
+                break
         return {"id": self.id, "skill": self.skill, "question": self.request.get("question", ""),
                 "status": self.status, "started": self.started,
                 "seconds": round((self.finished or time.time()) - self.started, 2), "headline": headline[:200],
@@ -151,6 +154,8 @@ class RunManager:
         self.data_dir.mkdir(parents=True, exist_ok=True)
         self.runs, self.active, self.lock = {}, None, threading.Lock()
         self.feedback_log = self.data_dir / "feedback.jsonl"  # .jsonl: not picked up as a run file
+        for skill in skills.values():  # a skill may read other runs (the judge grades a finished one)
+            skill.manager = self
 
     def start(self, skill_name, request):
         skill = self.skills.get(skill_name)
