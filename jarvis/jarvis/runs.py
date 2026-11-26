@@ -55,7 +55,7 @@ class Cancelled(Exception):  # raised inside a skill when the user presses Cance
     pass
 
 
-class Busy(Exception):  # only one run at a time: pipeline stages share output files
+class Busy(Exception):  # one user run at a time (plus one background sync): pipeline stages share output files
     pass
 
 
@@ -148,11 +148,14 @@ class StoredRun:  # a finished run loaded from disk; offers the same read API as
 
 
 class RunManager:
-    YIELDING = {"vault_sync"}  # background runs that a user's run waits for instead of getting Busy
+    # Background runs (the vault sync) can take long: the user keeps chatting while one runs. A question asked meanwhile
+    # answers from the last finished index and does not index itself (RagSkill.validate -> keep_index).
+    BACKGROUND = {"vault_sync"}
+
     def __init__(self, skills, data_dir=DATA):
         self.skills, self.data_dir = skills, Path(data_dir)
         self.data_dir.mkdir(parents=True, exist_ok=True)
-        self.runs, self.active, self.lock = {}, None, threading.Lock()
+        self.runs, self.active, self.background, self.lock = {}, None, None, threading.Lock()
         self.feedback_log = self.data_dir / "feedback.jsonl"  # .jsonl: not picked up as a run file
         for skill in skills.values():  # a skill may read other runs (the judge grades a finished one)
             skill.manager = self
@@ -162,16 +165,18 @@ class RunManager:
         if not skill:
             raise ValueError(f"Unknown skill: {skill_name}")
         request = skill.validate(request)  # reject bad input before anything starts
-        background = self.active
-        if background and background.skill in self.YIELDING and background.status == "running" and skill_name not in self.YIELDING:
-            deadline = time.time() + 300  # a vault sync is short: let the question wait for it instead of failing
-            while background.status == "running" and time.time() < deadline:
-                background.events_since(len(background.events), timeout=1)
+        background = skill_name in self.BACKGROUND
         with self.lock:
-            if self.active and self.active.status == "running":
+            if self.active and self.active.status == "running":  # a sync waits for the user's run (it may be indexing)
                 raise Busy(f"Run {self.active.id} is still running")
+            if background and self.background_run():
+                raise Busy(f"Run {self.background.id} is still running")
             run = Run(skill_name, request)
-            self.runs[run.id], self.active = run, run
+            self.runs[run.id] = run
+            if background:
+                self.background = run
+            else:
+                self.active = run
         threading.Thread(target=self._execute, args=(skill, run), daemon=True).start()
         return run
 
@@ -248,5 +253,8 @@ class RunManager:
                 continue
         return rows[::-1]
 
-    def active_id(self):
+    def active_id(self):  # the user's running run, which the console follows (a background sync is not one)
         return self.active.id if self.active and self.active.status == "running" else None
+
+    def background_run(self):  # the running vault sync, or None
+        return self.background if self.background and self.background.status == "running" else None

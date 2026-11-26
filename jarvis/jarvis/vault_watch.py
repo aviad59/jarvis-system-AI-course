@@ -5,7 +5,8 @@ change it waits until the vault has been quiet for SETTLE seconds (Obsidian save
 type), checks that the index really differs from the notes (content hashes), and starts the
 vault_sync skill. Only new or changed chunks are embedded; deleted notes drop out of the index.
 
-If a run is already going, it tries again on the next poll. If a sync fails (for example Ollama
+The sync runs in the background: questions asked meanwhile answer from the last finished index.
+If another run is going, it tries again on the next poll. If a sync fails (for example Ollama
 is closed), it waits for the next change in the vault; asking a question also re-indexes first.
 """
 import threading  # background polling
@@ -20,6 +21,11 @@ _state = {"text": "starting", "thread": None}
 
 
 def state():  # one short line for the Systems panel
+    run = _state.get("run")
+    if run is not None and run.status == "running":  # e.g. "re-indexing in the background · embedded 216/2209"
+        progress = next((e["line"].split(":", 1)[1].strip() for e in reversed(run.events)
+                         if e["type"] == "log" and e["line"].startswith("EMBEDDED:")), None)
+        return "re-indexing in the background" + (f" · embedded {progress}" if progress else "")
     return _state["text"]
 
 
@@ -67,7 +73,7 @@ def _loop(manager):
             except Busy:
                 _state["text"] = "change waiting for the current run"
                 continue
-            run_snapshot, pending = snapshot, False
+            run_snapshot, pending, _state["run"] = snapshot, False, run
             _log(f"notes changed -> re-indexing (run {run.id})")
         except Exception as error:  # never let the watcher die; report and keep polling
             _log(f"error: {type(error).__name__}: {error}")

@@ -136,15 +136,16 @@ def index_steps(documents="vault", source="local", structured=False, embedding_m
 
 def build_steps(question, skip_index=False, structured=False, embedding_model="embeddinggemma", hybrid=False,
                 top_k=3, exclude_superseded=False, provider="ollama", model=None, source="local", documents="vault",
-                history_file=None):
+                history_file=None, index_busy=False):
     """Return the pipeline as a list of steps: {'id', 'title', 'folder', 'args'} (args exclude the Python executable).
 
     source="mongodb" stores and reads the vectors in MongoDB Atlas; source="local" uses only INDEX_FILE.
     documents="vault" indexes the Obsidian vault (VAULT), "course" the incident documents, "both" all of them.
-    skip_index is ignored when the saved index is out of date (other documents, or the vault changed).
+    skip_index is ignored when the saved index is out of date (other documents, or the vault changed), unless
+    index_busy: a sync is rebuilding the index right now, so the last finished one is searched as it is.
     """
     steps = index_steps(documents, source, structured, embedding_model)  # also validates source and documents
-    if skip_index and not index_is_stale(documents):
+    if skip_index and (index_busy or not index_is_stale(documents)):
         steps = []
     local = source == "local"
     model = model or DEFAULT_MODELS[provider]

@@ -206,9 +206,11 @@ async function openRun(id) {   // replay a finished run, or follow one that is s
 }
 
 /* ---------------- runs ---------------- */
+const BACKGROUND = new Set(["vault_sync"]);   // runs.RunManager.BACKGROUND: you can ask while one is running
+function blocking() { return !state.ended && !BACKGROUND.has(state.runSkill); }   // the followed run holds the input
 async function submit(event) {
   event?.preventDefault();
-  if (!state.ended) return toast("A run is already in progress.", "info");
+  if (blocking()) return toast("A run is already in progress.", "info");
   const question = els.question.value.trim();
   if (state.skill.needs_question && !question) return els.question.focus();
   stopSpeaking();
@@ -250,6 +252,7 @@ const HANDLERS = {
     closeTheater();
     state.runSkill = e.skill;
     state.judgeable = false;
+    if (BACKGROUND.has(e.skill)) els.send.disabled = false;   // watching a sync: asking still works
     if (e.skill === "judge") startJudgeCard(e);   // under the response it grades; never part of the conversation
     else {
       state.asked = e.request.question || "";
@@ -474,7 +477,7 @@ function addJudgeButton(card, runId) {
   foot.append(button);
 }
 async function judgeRun(runId, card, button) {
-  if (!state.ended) return toast("A run is already in progress.", "info");
+  if (blocking()) return toast("A run is already in progress.", "info");
   stopSpeaking();
   state.judgeTarget = card; state.judgeButton = button;
   try {
@@ -981,7 +984,7 @@ function toggleRecording() {
   return recordWhisper();
 }
 function listenInBrowser() {
-  if (!state.ended) return toast("Wait for the current run to finish.", "info");
+  if (blocking()) return toast("Wait for the current run to finish.", "info");
   stopSpeaking();
   const recognizer = new BrowserSpeech();
   // The browser can't detect the language itself; Auto listens in Hebrew, which still catches English names.
@@ -1040,7 +1043,7 @@ function listenInBrowser() {
 }
 async function recordWhisper() {
   if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) return toast("This browser cannot record audio.");
-  if (!state.ended) return toast("Wait for the current run to finish.", "info");
+  if (blocking()) return toast("Wait for the current run to finish.", "info");
   let stream;
   const clicked = performance.now();
   els.mic.classList.add("recording");
@@ -1156,7 +1159,7 @@ function init() {
   const linked = new URLSearchParams(location.hash.slice(1)).get("run");   // deep link: /#run=<id>
   loadHistory().then((data) => { if (data?.active) follow(data.active); else if (linked) openRun(linked); });
   boot();
-  setInterval(() => { if (state.ended) loadStatus(); }, 30000);
-  setInterval(() => { if (state.ended) loadHistory(); }, 5000);   // shows vault syncs started by the watcher
+  setInterval(() => { if (!blocking()) loadStatus(); }, 30000);
+  setInterval(() => { if (!blocking()) loadHistory(); }, 5000);   // shows vault syncs started by the watcher
 }
 init();

@@ -90,10 +90,13 @@ class RagSkill(Skill):
         clean["question"] = question
         clean["history"] = clean_history(request.get("history"))
         clean["rewrite"] = needs_rewrite(question, clean["history"])
+        # a vault sync is running in the background: answer from the last finished index instead of indexing again
+        clean["keep_index"] = bool(self.manager and self.manager.background_run())
         return clean
 
     def steps(self, request):
-        return rag.build_steps(request["question"], skip_index=request["skip_index"], hybrid=request["hybrid"],
+        return rag.build_steps(request["question"], skip_index=request["skip_index"] or request.get("keep_index", False),
+                               index_busy=request.get("keep_index", False), hybrid=request["hybrid"],
                                top_k=request["top_k"], exclude_superseded=request["exclude_superseded"],
                                provider=request["provider"], model=request["model"] or None, source=request["source"],
                                documents=request["documents"], history_file=rag.HISTORY if request.get("history") else None)
@@ -127,6 +130,8 @@ class RagSkill(Skill):
         # the key is passed to the child process only and never emitted
         for step in self.steps(request):
             run.emit("stage_start", stage=step["id"], title=step["title"])
+            if step["id"] == "retrieve" and request.get("keep_index"):
+                run.emit("log", stage="retrieve", line="vault sync running in the background: searching the last finished index")
             started = time.time()
             code = run.run_process(step["id"], [sys.executable, *step["args"]], step["folder"], env)
             run.check_cancelled()
