@@ -9,7 +9,7 @@
 const $ = (id) => document.getElementById(id);
 const els = {
   body: document.body, feed: $("feed"), intro: $("intro"), question: $("question"), send: $("send"), mic: $("mic"),
-  options: $("options"), skills: $("skills"), systems: $("systems"), history: $("history"), stages: $("stages"),
+  options: $("options"), systems: $("systems"), history: $("history"), stages: $("stages"),
   evidence: $("evidence"), evidenceMeta: $("evidence-meta"), log: $("log"), cancel: $("cancel"), conn: $("conn"),
   banner: $("state-banner"), coreState: $("core-state"), coreSub: $("core-sub"), speak: $("speak"), lang: $("voice-lang"),
   engine: $("stt-engine"),
@@ -144,7 +144,7 @@ async function boot() {
 /* ---------------- skills & options ---------------- */
 async function loadSkills() {
   state.skills = await api("/api/skills");
-  // The Protocols panel is left blank: always "Ask Jarvis", which routes every question itself.
+  // There is no skill picker: always "Ask Jarvis", which routes every question itself.
   selectSkill(state.skills.find((s) => s.name === "jarvis") || state.skills[0]);
 }
 function selectSkill(skill) {

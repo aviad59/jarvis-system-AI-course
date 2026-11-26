@@ -49,7 +49,6 @@ The Systems panel shows the watcher's state.
 | Area | Shows |
 |---|---|
 | Systems | Ollama + models, MongoDB Atlas chunk count, Anthropic key, Obsidian vault, local index, Whisper, speech engine |
-| Protocols | Left blank. The console always uses *Ask Jarvis* (one box for everything, see below) |
 | Core | The current state: standing by, listening, processing (with stage), responding |
 | Dialogue | Answers as claims with citation chips; click a chip to see the exact source chunk |
 | Pipeline telemetry | Each stage with live timer and status, retrieved evidence with scores, raw log |
@@ -58,7 +57,7 @@ The Systems panel shows the watcher's state.
 
 ### Ask Jarvis: one box for everything
 
-With **Ask Jarvis** selected (the default), type or say anything; `router.py` decides where it goes
+Type or say anything; `router.py` decides where it goes
 and the card shows the choice (`JARVIS · YOUTUBE SHORTS`, and the reason in the log):
 
 | You say | Goes to |
@@ -206,7 +205,7 @@ class WeatherSkill(Skill):
         run.emit("message", text="Sunny, 24°C.")
 ```
 
-Add an instance to `SKILLS` in `skills.py`. The console builds its button and option controls
+Add an instance to `SKILLS` in `skills.py`. The console builds its option controls
 automatically. A new event type only needs a handler in `HANDLERS` in `static/app.js`.
 
 ## Tests
