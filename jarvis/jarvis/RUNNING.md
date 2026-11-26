@@ -122,8 +122,8 @@ python rag.py --question "HTTP 401" --skip-index --source mongodb
 
 ## 6. Ask a question
 
-1. In **Protocols**, keep **Ask Jarvis** selected (it sends questions to the documents and YouTube
-   requests such as `find shorts about cooking` or `@MrBeast` to the YouTube Shorts MCP server).
+1. Every question goes to **Ask Jarvis** (the **Protocols** panel is left blank). It sends questions to the
+   documents and YouTube requests such as `find shorts about cooking` or `@MrBeast` to the YouTube Shorts MCP server.
 2. Check the options above the command line. **Answer with** is `ollama` by default.
 3. Type a question, for example `אחרי העדכון יש יותר שגיאות התחברות ב-Cedar. מה כדאי לבדוק קודם?`,
    and press **Enter** (or click **Engage**).

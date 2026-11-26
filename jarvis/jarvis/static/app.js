@@ -143,15 +143,11 @@ async function boot() {
 /* ---------------- skills & options ---------------- */
 async function loadSkills() {
   state.skills = await api("/api/skills");
-  const wanted = store.get("skill.v2", "jarvis");   // v2: "Ask Jarvis" (one box for everything) is the new default
-  selectSkill(state.skills.find((s) => s.name === wanted) || state.skills[0]);
+  // The Protocols panel is left blank: always "Ask Jarvis", which routes every question itself.
+  selectSkill(state.skills.find((s) => s.name === "jarvis") || state.skills[0]);
 }
 function selectSkill(skill) {
   state.skill = skill;
-  store.set("skill.v2", skill.name);
-  els.skills.replaceChildren(...state.skills.map((s) => el("button", {
-    type: "button", class: "skill", role: "radio", "aria-checked": String(s === skill), onclick: () => selectSkill(s),
-  }, el("strong", { text: s.title }), el("small", { text: s.description }))));
   const saved = store.get("options." + skill.name, {});
   els.options.replaceChildren(...skill.options.map((o) => renderOption(o, saved[o.key] ?? o.default)));
   els.question.placeholder = skill.needs_question ? "Command or question…" : "No question needed — press Engage";
