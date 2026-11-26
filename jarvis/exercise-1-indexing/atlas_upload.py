@@ -16,11 +16,27 @@ import time  # ממתינים עד שה־Vector Index מוכן
 from pathlib import Path  # נתיב לקובץ ה־index
 
 
+FALLBACK_DNS = ("1.1.1.1", "8.8.8.8")  # public resolvers, tried after the system ones
+
+
+def add_fallback_dns():  # mongodb+srv:// needs an SRV lookup; a dead ISP resolver must not make it time out
+    try:
+        import dns.resolver  # installed with pymongo
+        resolver = dns.resolver.Resolver()  # the system's resolvers, in the system's order
+    except Exception:  # no dnspython or no readable system config: leave pymongo's default alone
+        return
+    resolver.nameservers = list(dict.fromkeys([*resolver.nameservers, *FALLBACK_DNS]))
+    resolver.timeout = 2  # seconds per server before trying the next one
+    dns.resolver.default_resolver = resolver  # pymongo resolves through the default resolver
+
+
 def connect(uri):  # מתחברים ל־Atlas ובודקים שהחיבור עובד
     try:  # pymongo אינו חלק מהספרייה המובנית
         from pymongo import MongoClient  # הדרייבר הרשמי של MongoDB
     except ImportError:  # הספרייה לא הותקנה
         raise ValueError("pymongo is missing. Run: python -m pip install pymongo") from None  # הנחיה ברורה
+    if uri.startswith("mongodb+srv://"):
+        add_fallback_dns()
     client = MongoClient(uri, serverSelectionTimeoutMS=15000)  # לא ממתינים לנצח אם הכתובת או ה־IP חסומים
     client.admin.command("ping")  # בדיקת חיבור אמיתית
     return client  # חיבור פעיל
