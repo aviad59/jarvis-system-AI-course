@@ -920,7 +920,14 @@ class Judge(unittest.TestCase):  # judge.py: what is judged, which criteria appl
         shorts = judge.case_from_run([{"type": "posts", "tool": "t", "query": "q", "posts": []}], {"question": "q"})
         self.assertEqual(pick(shorts, {"provider": "anthropic", "model": ""}), ("anthropic", skills.rag.DEFAULT_MODELS["anthropic"]))
         self.assertEqual(pick(shorts, {"provider": "ollama", "model": "qwen3:8b"}), ("ollama", "qwen3:8b"))
-        self.assertEqual(pick(shorts, {"captions_by": "gemini"}), ("gemini", skills.rag.DEFAULT_MODELS["gemini"]))  # a direct meme run
+        meme = judge.case_from_run([{"type": "meme", "template": "drake", "name": "Drake", "text": ["a", "b"]}], {"question": "q"})
+        self.assertEqual(pick(meme, {"provider": "anthropic", "route": {"request": {"captions_by": "ollama"}}}),
+                         ("ollama", "gemma3:4b"))  # Ask Jarvis -> meme: the captions model, not "Answer with"
+        self.assertEqual(pick(meme, {"captions_by": "gemini"}), ("gemini", skills.rag.DEFAULT_MODELS["gemini"]))  # a direct meme run
+        import urllib.error
+        rejected = urllib.error.HTTPError("https://api.anthropic.com/v1/messages", 401, "Unauthorized", {}, None)
+        self.assertEqual(skills.JudgeSkill.failure(rejected, "anthropic"),
+                         "anthropic rejected the API key (HTTP 401). Put a valid key in your .env / atlas-credentials.env")
 
 
 FAKE_MCP_SERVER = r'''

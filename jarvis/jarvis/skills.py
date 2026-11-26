@@ -854,15 +854,31 @@ class JudgeSkill(Skill):  # LLM as a judge: grade a finished run with the model 
                 "target_skill": data["summary"]["skill"]}
 
     @staticmethod
-    def judge_model(case, request):  # the same model that answered: the answer's, else the one the run was asked to use
+    def judge_model(case, request):  # the same model that wrote the response
         if case["answer"] and case["answer"]["provider"] in rag.PROVIDERS and case["answer"]["model"]:
-            return case["answer"]["provider"], case["answer"]["model"]
+            return case["answer"]["provider"], case["answer"]["model"]  # a documents answer: its own model
         inner = (request.get("route") or {}).get("request") or {}
-        for source in (request, inner):
-            provider = source.get("provider") or source.get("captions_by")
+        if case["meme"]:  # the captions model ("Meme: captions by"), not the documents' "Answer with"
+            provider = inner.get("captions_by") or request.get("captions_by")
             if provider in rag.PROVIDERS:
-                return provider, (source.get("model") if source.get("provider") else None) or rag.DEFAULT_MODELS[provider]
+                return provider, rag.DEFAULT_MODELS[provider]
+        provider = request.get("provider") or inner.get("provider")  # Shorts: the model the run was asked to use
+        if provider in rag.PROVIDERS:
+            return provider, request.get("model") or inner.get("model") or rag.DEFAULT_MODELS[provider]
         return "ollama", rag.DEFAULT_MODELS["ollama"]
+
+    @staticmethod
+    def failure(error, provider):  # a short reason the judge model failed, that says what to fix
+        code = getattr(error, "code", None)  # urllib's HTTPError
+        if code in (401, 403):
+            return f"{provider} rejected the API key (HTTP {code}). Put a valid key in your .env / atlas-credentials.env"
+        if code == 404:
+            return f"{provider} doesn't know this model (HTTP 404)"
+        if code == 429:
+            return f"{provider} rate limit or quota reached (HTTP 429); try again later"
+        if isinstance(error, ValueError):  # no key, or a reply that isn't JSON
+            return str(error)
+        return f"{type(error).__name__}: {error} (is {provider} reachable?)"
 
     def stages(self, request):
         return [{"id": "collect", "title": "Read the response"},
@@ -906,8 +922,7 @@ class JudgeSkill(Skill):  # LLM as a judge: grade a finished run with the model 
         except Exception as error:  # no key, model down, timeout, a reply that isn't JSON
             run.check_cancelled()
             run.emit("stage_end", stage="judge", status="error", seconds=round(time.time() - started, 2))
-            detail = str(error) if isinstance(error, ValueError) else f"{type(error).__name__}: {error} (is {request['provider']} reachable?)"
-            raise RuntimeError(f"Judge failed — {detail}") from None
+            raise RuntimeError(f"Judge failed — {self.failure(error, request['provider'])}") from None
         run.check_cancelled()
         seconds = round(time.time() - started, 2)
         result = judge.score(case, ids, reply)
