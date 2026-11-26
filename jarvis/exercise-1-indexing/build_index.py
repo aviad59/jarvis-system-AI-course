@@ -6,8 +6,10 @@ embed שולח כל chunk למודל embeddings ושומר לידו את הוו�
 import argparse  # טוענים כלי עבור קריאת אפשרויות משורת הפקודה
 import importlib.util  # טוענים כלי עבור טעינת מימוש הלומדים מקובץ
 import json  # טוענים כלי עבור קריאה וכתיבה של קבצי התוצרים
+import os  # JARVIS_EMBED_WORKERS: ברירת מחדל ל־--workers כשהשרת מריץ את השלב
 import sys  # טוענים כלי עבור דיווח קוד סיום והודעות שגיאה
 import time  # טוענים כלי עבור מדידת משך ההכנה
+from concurrent.futures import ThreadPoolExecutor, as_completed  # --workers: כמה בקשות embed במקביל
 from pathlib import Path  # משתמשים בנתיבים שמאפשרים לפתוח ולשמור את קבצי התרגיל
 from index_support import (BASE, REQUIRED, digest, load_documents, load_vault, validate_pieces,  # טוענים את פונקציות העזר הדרושות לשלב הנוכחי
                            resolve_model, embed_texts, fixture_vectors, validate_vectors, VAULT_INCLUDE)  # משלימים את ביטוי הנתונים של build_index תוך שמירה על המבנה המוצג
@@ -81,18 +83,20 @@ def embed(args):  # מוסיפים embedding לכל קטע ושומרים את �
         cache, reason = load_reuse_cache(args.reuse, signature)  # מפת hash של קלט ← וקטור, מתוך index קודם תואם
         if args.reuse:  # מדווחים אם ה־index הקודם שמיש
             print(f"REUSE: {reason}")  # למשל model changed → מחשבים הכול מחדש
-        vectors = [cache.get(digest(text)) for text in texts]  # וקטור ישן רק אם הקלט המדויק למודל לא השתנה
-        missing = [i for i, vector in enumerate(vectors) if vector is None]  # רק אלה נשלחים למודל
-        # batches קטנים מקלים על זיהוי שגיאות ומציגים התקדמות בהרצה מקומית.
-        for start in range(0, len(missing), 8):  # עוברים לפי הסדר על start ומטפלים בכל פריט בנפרד
-            positions = missing[start:start + 8]  # מיקומי הטקסטים בקבוצה הנוכחית
-            batch = [texts[i] for i in positions]  # בוחרים קבוצת טקסטים קטנה לבקשה אחת
-            fresh = embed_texts(args.base_url, model, batch)  # וקטורים חדשים מ־Ollama
-            for i, vector in zip(positions, fresh):  # מציבים כל וקטור במקום של הרשומה שלו
-                vectors[i] = vector  # שומרים על סדר הרשומות
-            print(f"EMBEDDED: {start + len(batch)}/{len(missing)}")  # מציגים ללומד את תוצאת השלב ואת המידע הדרוש לבדיקה
+        hashes = [digest(text) for text in texts]  # hash של הקלט המדויק למודל, לכל רשומה
+        vectors = [cache.get(key) for key in hashes]  # וקטור ישן רק אם הקלט המדויק למודל לא השתנה
+        checkpoint = checkpoint_path(args)  # וקטורים שחושבו בהרצה קודמת שנעצרה באמצע
+        resumed = load_checkpoint(checkpoint, signature)
+        for i, key in enumerate(hashes):
+            if vectors[i] is None and key in resumed:
+                vectors[i] = resumed[key]
+        to_embed = [i for i, vector in enumerate(vectors) if vector is None]  # רק אלה נשלחים למודל
+        from_checkpoint = sum(1 for i, key in enumerate(hashes) if key in resumed and key not in cache)
+        if from_checkpoint:
+            print(f"CHECKPOINT: resumed {from_checkpoint} vectors from {checkpoint}")
+        embed_missing(args, model, texts, hashes, vectors, to_embed, checkpoint, signature)
         if args.reuse:  # counters לבדיקת העדכון החלקי
-            report_reuse(args.reuse, records, texts, cache, len(missing))  # שמורים / חושבו / הוזזו / הוסרו
+            report_reuse(args.reuse, records, texts, cache, len(to_embed) + from_checkpoint)  # שמורים / חושבו / הוזזו / הוסרו
     dimension = validate_vectors(vectors)  # קובעים את מספר הממדים מתוך הווקטורים שהוחזרו
     for record, text, vector in zip(records, texts, vectors):  # עוברים לפי הסדר על record, text, vector ומטפלים בכל פריט בנפרד
         record["embedding"] = vector  # משלימים את ביטוי הנתונים של embed תוך שמירה על המבנה המוצג
@@ -107,7 +111,9 @@ def embed(args):  # מוסיפים embedding לכל קטע ושומרים את �
     if args.fixture and output.name == "index.json":  # מפרידים בין מספרי בדיקה מקומיים לבין פלט מודל אמיתי
         raise ValueError("Use a distinct offline filename, such as build/offline-index.json")  # עוצרים עם הסבר ברור כאשר החוזה או הקלט אינם תקינים
     output.parent.mkdir(parents=True, exist_ok=True)  # מכינים תיקיית תוצרים אם היא עדיין אינה קיימת
-    output.write_text(json.dumps(result, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")  # שומרים את התוצר בקובץ כדי שאפשר יהיה לפתוח ולהעביר אותו לשלב הבא
+    write_atomic(output, json.dumps(result, ensure_ascii=False, indent=2) + "\n")  # שומרים את התוצר בקובץ כדי שאפשר יהיה לפתוח ולהעביר אותו לשלב הבא
+    if not args.fixture:  # כל הווקטורים כבר בקובץ ה־index; ה־checkpoint כבר לא נחוץ
+        checkpoint_path(args).unlink(missing_ok=True)
     print(f"MODE: {result['manifest']['embedding_mode']}")  # מציגים ללומד את תוצאת השלב ואת המידע הדרוש לבדיקה
     print(f"INDEX: documents={prepared['document_count']}, chunks={len(records)}, dimensions={dimension}")  # מציגים ללומד את תוצאת השלב ואת המידע הדרוש לבדיקה
     print(f"MODEL: {model}")  # מציגים ללומד את תוצאת השלב ואת המידע הדרוש לבדיקה
@@ -130,6 +136,78 @@ def save_to_atlas(result, env_path):  # מעלים את ה־index ל־Atlas לפ
         atlas_upload.sync_index(result, settings)  # upsert + מחיקת קטעים ישנים + Vector Index
     except Exception as error:  # כולל שגיאות pymongo
         raise ValueError("Atlas upload failed (local index was saved): " + atlas_upload.safe_error(error, settings)) from None  # הודעה בלי סיסמה  # מציגים ללומד את תוצאת השלב ואת המידע הדרוש לבדיקה
+
+
+def write_atomic(path, text):  # שאלה שנשאלת בזמן הסנכרון קוראת את ה־index הקודם או החדש, אף פעם לא חצי קובץ
+    temporary = path.with_name(path.name + ".tmp")
+    temporary.write_text(text, encoding="utf-8")
+    for attempt in range(20):  # ב־Windows ההחלפה נכשלת כל עוד מישהו קורא את הקובץ: מנסים שוב
+        try:
+            os.replace(temporary, path)
+            return
+        except PermissionError:
+            if attempt == 19:
+                raise
+            time.sleep(0.25)
+
+
+def checkpoint_path(args):  # build/index.json -> build/index.checkpoint.jsonl
+    return Path(args.output or "build/index.json").with_suffix(".checkpoint.jsonl")
+
+
+def load_checkpoint(path, signature):  # וקטורים שנשמרו בהרצה שנעצרה; רק אם המודל והפורמט זהים
+    if not path.exists():
+        return {}
+    lines = path.read_text(encoding="utf-8").splitlines()
+    try:
+        header = json.loads(lines[0]) if lines else {}
+    except json.JSONDecodeError:
+        header = {}
+    if header.get("signature") != signature:  # checkpoint ממודל אחר: לא מערבבים מרחבי וקטורים
+        print(f"CHECKPOINT: {path} is from a different model or format; starting over")
+        path.unlink()
+        return {}
+    saved = {}
+    for line in lines[1:]:
+        try:
+            entry = json.loads(line)
+        except json.JSONDecodeError:  # שורה אחרונה שנקטעה כשהתהליך נסגר
+            continue
+        saved[entry["sha"]] = entry["embedding"]
+    return saved
+
+
+def embed_missing(args, model, texts, hashes, vectors, to_embed, checkpoint, signature):
+    """Embed the records in to_embed, args.workers requests at a time, appending each finished batch to the checkpoint."""
+    size, workers = getattr(args, "batch_size", 8), getattr(args, "workers", 1)  # Namespace שנבנה ידנית (check_bonus)
+    batches = [to_embed[start:start + size] for start in range(0, len(to_embed), size)]
+    if not batches:
+        return
+    checkpoint.parent.mkdir(parents=True, exist_ok=True)
+    fresh_file = not checkpoint.exists()
+    if not fresh_file and not checkpoint.read_bytes().endswith(b"\n"):  # שורה קטועה: מתחילים שורה חדשה אחריה
+        with checkpoint.open("a", encoding="utf-8") as saved:
+            saved.write("\n")
+    if workers > 1:
+        print(f"WORKERS: {workers} parallel requests of {size} chunks (set OLLAMA_NUM_PARALLEL >= {workers} on the Ollama server)")
+    done = 0
+    with checkpoint.open("a", encoding="utf-8") as saved, ThreadPoolExecutor(max_workers=workers) as pool:
+        if fresh_file:
+            saved.write(json.dumps({"signature": signature}) + "\n")
+        futures = {pool.submit(embed_texts, args.base_url, model, [texts[i] for i in batch]): batch for batch in batches}
+        try:
+            for future in as_completed(futures):
+                batch = futures[future]
+                for i, vector in zip(batch, future.result()):
+                    vectors[i] = vector
+                    saved.write(json.dumps({"sha": hashes[i], "embedding": vector}) + "\n")
+                saved.flush()  # נשמר בדיסק גם אם התהליך ייסגר עכשיו
+                done += len(batch)
+                print(f"EMBEDDED: {done}/{len(to_embed)}", flush=True)
+        except BaseException:  # שגיאה או Ctrl+C: לא ממשיכים לשלוח את שאר הבקשות
+            for future in futures:
+                future.cancel()
+            raise
 
 
 def load_reuse_cache(path, signature):  # בונוס 2: טוענים וקטורים מ־index קודם רק אם הוא תואם
@@ -193,6 +271,9 @@ def main():  # מגדירים אפשרויות הרצה ומפעילים את ה
     e.add_argument("--base-url", default="http://127.0.0.1:11434")  # מגדירים אפשרות הרצה: --base-url
     e.add_argument("--document-format", choices=("embeddinggemma", "none"))  # מגדירים אפשרות הרצה: --document-format
     e.add_argument("--fixture", action="store_true")
+    e.add_argument("--workers", type=int, default=int(os.environ.get("JARVIS_EMBED_WORKERS", "1")),
+                   help="Parallel requests to Ollama (default: JARVIS_EMBED_WORKERS, else 1)")
+    e.add_argument("--batch-size", type=int, default=8, help="Chunks per request to Ollama")
     e.add_argument("--no-atlas", action="store_true", help="Do not upload to MongoDB Atlas even if credentials exist")  # רק קובץ מקומי
     e.add_argument("--atlas-env", help="Atlas credentials file (default: atlas-credentials.env or .env in this folder)")  # קובץ הגדרות
     e.add_argument("--reuse", metavar="OLD_INDEX", help="Bonus 2: reuse vectors from a previous compatible index")  # בונוס 2  # מגדירים אפשרות הרצה: --fixture
@@ -200,6 +281,8 @@ def main():  # מגדירים אפשרויות הרצה ומפעילים את ה
     args = parser.parse_args()  # קוראים את אפשרויות ההרצה שנבחרו
     if hasattr(args, "max_chars") and args.max_chars < 100:  # בודקים שגודל הקטע או מגבלת החלוקה עומדים בחוזה התרגיל
         parser.error("max-chars must be at least 100")  # מסבירים איזה ערך חסר או אינו חוקי באפשרויות ההרצה
+    if getattr(args, "workers", 1) < 1 or getattr(args, "batch_size", 1) < 1:
+        parser.error("--workers and --batch-size must be at least 1")
     try:  # מפעילים את השלב עם טיפול מרוכז בשגיאות צפויות
         args.function(args)  # מפעילים את שלב prepare או embed שנבחר בפקודה
     except (ValueError, KeyError, OSError, NotImplementedError, TypeError) as error:  # מתרגמים שגיאה צפויה להודעה שמסבירה מה צריך לתקן
