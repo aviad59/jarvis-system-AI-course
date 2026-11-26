@@ -34,13 +34,20 @@ Its weaknesses are why this is a rewrite and not a copy:
 
 ## Setup
 
-The Python that runs Jarvis already works if it has the packages: `python -m pip install -r requirements.txt`.
-Or a separate venv in this folder (`.venv`), which Jarvis then uses automatically.
+A venv in this folder (`.venv`), which Jarvis then uses automatically:
+
+```
+uv venv .venv
+uv pip install --python .venv/Scripts/python.exe -r requirements.txt
+```
+
+Or, without a venv, install the packages into the Python that runs Jarvis: `python -m pip install -r requirements.txt`.
 
 ## Used by
-- **Claude Code**: `.mcp.json` in the repo root registers it as `memes`. Approve it, then check with `/mcp`.
+- **Claude Code**: `session-5/.mcp.json` registers it as `memes`. Approve it, then check with `/mcp`.
 - **Jarvis**: *Ask Jarvis* sends "make a meme about ..." / "תעשה לי מם על ..." to the **Memes** skill
-  (`session-5/jarvis-rag/jarvis/skills.py`), which runs `jarvis_client.py` to call these tools over MCP stdio.
+  (`session-5/jarvis-rag/jarvis/skills.py`), which calls these tools through `jarvis/mcp_client.py`: one MCP stdio
+  connection to `server.py`, started on the first meme and kept running (the template list is fetched once an hour).
   If you name a template and write the captions (`drake meme: writing tests / shipping on friday`) no model is needed;
   otherwise Jarvis first searches your notes for the topic (retrieval only) and the local Ollama model writes
   the captions from what the notes say, in your language.

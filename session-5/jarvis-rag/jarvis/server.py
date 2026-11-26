@@ -34,6 +34,7 @@ HERE = Path(__file__).resolve().parent
 sys.path.insert(0, str(HERE.parent))  # rag.py
 sys.path.insert(0, str(HERE))  # sibling modules
 import skills  # noqa: E402
+import mcp_client  # noqa: E402
 import tts  # noqa: E402
 import status  # noqa: E402
 import voice  # noqa: E402
@@ -274,6 +275,7 @@ def main():
         pass
     finally:
         server.server_close()
+        mcp_client.close()  # stop the MCP servers Jarvis started (youtube-shorts, memes)
 
 
 if __name__ == "__main__":

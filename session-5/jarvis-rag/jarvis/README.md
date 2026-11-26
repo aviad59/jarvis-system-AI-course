@@ -170,6 +170,7 @@ the neural voice again after a minute. Numbers are spelled out in Hebrew for MMS
 browser (static/)  --POST /api/runs-->  server.py --> RunManager (runs.py) --> Skill.run() (skills.py)
        ^                                                      |                    |
        +------- Server-Sent Events: /api/runs/<id>/events ----+     child processes: the exercise scripts
+                                                                     MCP servers (.mcp.json): mcp_client.py
 ```
 
 * `skills.py` – what Jarvis can do. One class per skill; `JarvisSkill` runs whichever skill the router picks.
@@ -177,6 +178,9 @@ browser (static/)  --POST /api/runs-->  server.py --> RunManager (runs.py) --> S
   (`TOOLS`, `tool_prompt`, `from_tool`), the sure cases (`sure_route`) and the plain-pattern rules (`route`).
 * `runs.py` – a run is an ordered list of events; live viewers follow it, finished runs are saved.
 * `status.py` – health checks (never returns URIs or keys).
+* `mcp_client.py` – Jarvis's MCP client (standard library only): one long-lived stdio connection per server in
+  `session-5/.mcp.json`, shared by the skills. A server starts on first use, is restarted if it died, and stops with
+  Jarvis. `call_tool(server, tool, arguments)`, `list_tools(server)`, `servers()`.
 * `voice.py` – local Whisper speech-to-text.
 * `tts.py` – text-to-speech: streamed neural voices (edge-tts), local MMS-TTS fallback (Hebrew, English).
 * `server.py` – HTTP API, SSE stream, static files (standard library only).
