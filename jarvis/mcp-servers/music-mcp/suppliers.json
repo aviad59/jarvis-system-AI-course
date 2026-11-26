@@ -8,7 +8,7 @@
       "site": "https://suno.com/mcp",
       "ops": {
         "create_song": {"tool": "audio-create", "description_or_lyrics": true},
-        "get_song": {"tool": "audio-wait", "args": {"song_id": "id"}},
+        "get_song": {"tool": "audio-wait", "args": {"song_id": "ids"}},
         "list_songs": "library-list",
         "get_credits": "account-usage"
       }

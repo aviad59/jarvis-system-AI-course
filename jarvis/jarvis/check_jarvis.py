@@ -551,6 +551,28 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual((written["style"], written["lyrics"]), ("mizrahi pop", "[Verse]\nעומר הביא פיצה"))
         self.assertTrue(by.startswith("ollama · "))
 
+    def test_songs_still_being_made_are_checked_again(self):  # the song card's "Check again" -> get_song with every id
+        calls = []
+
+        def fake_call(server_name, tool, arguments, **_):
+            calls.append((server_name, tool, arguments))
+            return {"ok": True, "status": "ready", "supplier": "Suno", "message": "",
+                    "songs": [{"id": i, "audio_url": f"https://cdn.example/{i}.mp3"} for i in arguments["song_ids"]]
+                    + [{"id": "x", "audio_url": "http://cdn.example/x.mp3"}]}
+        real = skills.mcp_client.call_tool
+        skills.mcp_client.call_tool = fake_call
+        try:
+            code, body = self.json("/api/songs/check", {"ids": ["a1", "b2"]})
+            self.assertEqual(code, 200)
+            self.assertEqual(calls, [("music", "get_song", {"song_ids": ["a1", "b2"]})])
+            self.assertEqual([s["audio_url"] for s in body["songs"]], ["https://cdn.example/a1.mp3", "https://cdn.example/b2.mp3", None])
+            self.assertEqual(self.json("/api/songs/check", {"ids": ["../etc"]})[0], 400)
+            self.assertEqual(self.json("/api/songs/check", {})[0], 400)
+            skills.mcp_client.call_tool = lambda *a, **k: {"ok": False, "error": "Not signed in"}
+            self.assertEqual(self.json("/api/songs/check", {"ids": ["a1"]})[0], 502)
+        finally:
+            skills.mcp_client.call_tool = real
+
     def test_media_serves_only_meme_files(self):  # locally drawn (Hebrew) memes; nothing else is reachable
         media = server.MEDIA
         media.mkdir(parents=True, exist_ok=True)

@@ -11,7 +11,7 @@ only `suppliers.json` changes; Jarvis and Claude Code keep calling the same tool
 | Tool | Returns |
 |---|---|
 | `create_song(description, lyrics, style, title, instrumental, wait)` | `{ok, status: ready\|pending\|failed, songs: [{id, title, audio_url, image_url, page_url, duration, ...}]}`. With `wait` (the default) it waits up to `MUSIC_WAIT_SECONDS` for the songs to be ready |
-| `get_song(song_id)` | One song's status and links |
+| `get_song(song_id | song_ids)` | One or several songs' status and links (one supplier call for all of them when it takes a list, like Suno's `audio-wait`) |
 | `list_songs(limit)` | Your latest songs |
 | `get_credits()` | Credits left |
 | `supplier_tools()` | The supplier's own tools and which of them each tool above uses |

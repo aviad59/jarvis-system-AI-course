@@ -88,7 +88,30 @@ class Supplied(unittest.TestCase):  # our server against the fake supplier, thro
         self.assertEqual((first["audio_url"], first["title"], first["duration"], first["style"]),
                          ("https://cdn.fake.example/c1.mp3", "Monday Blues", 121.4, "lofi"))
         self.assertEqual(state["calls"][0], ("generate_music", {"prompt": "monday meetings", "tags": "lo-fi", "make_instrumental": True}))
-        self.assertEqual(state["calls"][1], ("get_music_status", {"ids": ["c1"]}))  # a list, as the supplier's schema says
+        self.assertEqual(state["calls"][1], ("get_music_status", {"ids": ["c1", "c2"]}))  # all at once: the schema takes a list
+
+    def test_suno_answer_with_advice_after_the_json(self):  # audio-create: JSON, then "Call audio-wait once with all of them"
+        supplier, state = fake_supplier()
+
+        @supplier.tool(name="audio-create", description="Create audio from a description.")
+        def audio_create(description: str) -> str:
+            state["calls"].append(("audio-create", {"description": description}))
+            return ('{"clip_ids":["c1","c2"],"created_at":"2026-11-26T12:30:59Z","id":"c1","status":"submitted"} '
+                    "This made 2 songs, one per id: c1, c2. Call audio-wait once with all of them in ids, then tell the "
+                    "user about every song, not only the first.")
+        self.use(supplier, {"create_song": "audio-create", "get_song": {"tool": "get_music_status", "args": {"song_id": "ids"}}})
+        result = self.call("create_song", description="monday meetings")
+        self.assertEqual((result["status"], [s["id"] for s in result["songs"]]), ("ready", ["c1", "c2"]))
+        self.assertEqual([s["audio_url"] for s in result["songs"]], ["https://cdn.fake.example/c1.mp3", "https://cdn.fake.example/c2.mp3"])
+        self.assertEqual({c[1]["ids"] == ["c1", "c2"] for c in state["calls"][1:]}, {True})  # one call, every id
+
+    def test_get_song_with_several_ids(self):
+        supplier, state = fake_supplier(polls_until_ready=0)
+        self.use(supplier)
+        result = self.call("get_song", song_ids=["c1", "c2", "c1"])
+        self.assertEqual((result["status"], [s["id"] for s in result["songs"]]), ("ready", ["c1", "c2"]))
+        self.assertEqual(state["calls"], [("get_music_status", {"ids": ["c1", "c2"]})])
+        self.assertIn("Give a song id", self.call("get_song")["error"])
 
     def test_create_song_without_waiting_and_on_timeout(self):
         supplier, _ = fake_supplier(polls_until_ready=10 ** 6)
@@ -230,6 +253,9 @@ class Normalize(unittest.TestCase):
         self.assertTrue(normalize.failed({"status": "error"}))
 
     def test_text_results(self):
+        data, _ = normalize.payload(None, ['{"clip_ids": ["a", "b"], "id": "a", "status": "submitted"} This made 2 songs.'])
+        self.assertEqual([s["id"] for s in normalize.songs(data)], ["a", "b"])  # JSON with words after it
+        self.assertIsNone(normalize.payload(None, ["Done {not json} here"])[0])
         data, text = normalize.payload(None, ['{"clips": [{"id": "z", "title": "Z", "status": "complete"}]}'])
         self.assertEqual(normalize.songs(data, text)[0]["id"], "z")
         data, text = normalize.payload(None, ["Done! Listen: https://cdn.example/song.mp3, or https://suno.com/song/1."])

@@ -41,14 +41,25 @@ def payload(structured, texts=(), links=()) -> tuple:
     data = structured
     if isinstance(data, dict) and set(data) == {"result"}:  # fastmcp wraps lists and plain values like this
         data = data["result"]
+    if isinstance(data, str):  # a tool that returns a string: it is the text
+        text, data = text or data.strip(), None
     if data is None and text:
-        try:
-            data = json.loads(text)
-        except ValueError:
-            data = None
+        data = _leading_json(text)
     if links:  # resource links in the content (an audio file the supplier points to)
         data = {"result": data, "links": [{"url": u} for u in links]}
     return data, text
+
+
+def _leading_json(text):
+    """The JSON a text is, or starts with: Suno answers '{"clip_ids": [...], ...} This made 2 songs, ... Call audio-wait'."""
+    try:
+        return json.loads(text)
+    except ValueError:
+        pass
+    try:
+        return json.JSONDecoder().raw_decode(text)[0] if text[:1] in "{[" else None
+    except ValueError:
+        return None
 
 
 def https(value) -> str | None:
