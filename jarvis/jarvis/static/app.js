@@ -414,24 +414,55 @@ const HANDLERS = {
     say(e.hebrew ? "הנה המם שלך." : "Here's your meme.");   // after the notes answer, when there is one
   },
   song(e) {   // songs from the music MCP server (Suno by default): an audio player per song, the lyrics folded away
-    const ready = e.songs.filter((s) => s.audio_url);
-    const name = e.title || e.songs.find((s) => s.title)?.title || e.topic;
-    const head = el("p", { class: "claim", dir: "auto", text: ready.length
-      ? `${name}${e.style ? " · " + e.style : ""}` : e.message || "The song is still being made." });
-    const players = el("div", { class: "songs" }, e.songs.map((s, i) => el("div", { class: "song" },
-      s.image_url ? el("img", { src: s.image_url, alt: "", loading: "lazy" }) : null,
-      el("div", { class: "song-body" },
-        el("span", { class: "song-title", dir: "auto", text: `${s.title || name}${e.songs.length > 1 ? ` (${i + 1})` : ""}` }),
-        s.audio_url ? el("audio", { controls: true, preload: "none", src: s.audio_url })
-          : el("span", { class: "song-wait", text: s.status ? `status: ${s.status}` : "still being made" }),
-        s.page_url ? el("a", { href: s.page_url, target: "_blank", rel: "noopener", text: `Open in ${e.supplier}` }) : null))));
+    // Songs still being made get "Check again" (POST /api/songs/check). An older answer may carry the ids only in its
+    // message (Suno's raw reply), so those count as songs too.
+    const fromMessage = e.songs.length ? [] : [...new Set((e.message || "").match(/\b[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}\b/gi) || [])];
+    let songs = e.songs.length ? e.songs : fromMessage.slice(0, 12).map((id) => ({ id, status: "pending" }));
+    const name = e.title || songs.find((s) => s.title)?.title || e.topic;
+    const head = el("p", { class: "claim", dir: "auto" });
+    const players = el("div", { class: "songs" });
+    const status = el("span");
+    const check = el("button", { class: "song-check", type: "button", text: "Check again", onclick: () => refresh() });
+    function draw() {
+      const ready = songs.filter((s) => s.audio_url);
+      head.textContent = ready.length ? `${name}${e.style ? " · " + e.style : ""}`
+        : songs.length ? "The song is still being made: check again in a minute." : e.message || "The song is still being made.";
+      players.replaceChildren(...songs.map((s, i) => el("div", { class: "song" },
+        s.image_url ? el("img", { src: s.image_url, alt: "", loading: "lazy" }) : null,
+        el("div", { class: "song-body" },
+          el("span", { class: "song-title", dir: "auto", text: `${s.title || name}${songs.length > 1 ? ` (${i + 1})` : ""}` }),
+          s.audio_url ? el("audio", { controls: true, preload: "none", src: s.audio_url })
+            : el("span", { class: "song-wait", text: s.status ? `status: ${s.status}` : "still being made" }),
+          s.page_url ? el("a", { href: s.page_url, target: "_blank", rel: "noopener", text: `Open in ${e.supplier}` }) : null))));
+      status.textContent = ready.length === songs.length ? "" : `${ready.length}/${songs.length} ready`;
+      check.hidden = !songs.some((s) => s.id && !s.audio_url);
+      return ready.length;
+    }
+    async function refresh() {
+      const ids = songs.filter((s) => s.id && !s.audio_url).map((s) => s.id);
+      check.disabled = true;
+      check.textContent = "Checking…";
+      try {
+        const fresh = await api("/api/songs/check", { method: "POST", headers: { "Content-Type": "application/json" },
+          body: JSON.stringify({ ids }) });
+        const byId = new Map(fresh.songs.filter((s) => s.id).map((s) => [s.id, s]));
+        songs = songs.map((s) => byId.get(s.id) ? { ...s, ...byId.get(s.id) } : s);
+        if (!draw()) toast("Not ready yet: try again in a minute.", "info");
+      } catch (error) {
+        toast(`Couldn't check the songs: ${error.message}`);
+      } finally {
+        check.disabled = false;
+        check.textContent = "Check again";
+      }
+    }
+    const ready = draw();
     const lyrics = e.lyrics ? el("details", { class: "song-lyrics" }, el("summary", { text: "Lyrics" }),
       el("pre", { dir: "auto", text: e.lyrics })) : null;
     const foot = el("div", { class: "answer-foot" }, el("span", { text: e.supplier || "music" }),
-      el("span", { text: "MCP tool: create_song" }), ready.length ? null : el("span", { text: e.status || "pending" }),
+      el("span", { text: "MCP tool: create_song" }), status,
       e.notes?.length ? el("span", { dir: "auto", text: `from your notes: ${e.notes.join(", ")}` }) : null);
-    fillCard(head, e.songs.length ? players : null, lyrics, foot);
-    say(ready.length ? (e.hebrew ? "הנה השיר שלך." : "Here's your song.")
+    fillCard(head, songs.length ? players : null, songs.length ? check : null, lyrics, foot);
+    say(ready ? (e.hebrew ? "הנה השיר שלך." : "Here's your song.")
       : e.hebrew ? "השיר עדיין בהכנה, הוא יופיע בספרייה שלך." : "Your song is still being made; it will be in your library.");
   },
   status(e) { renderSystems(e.systems); },

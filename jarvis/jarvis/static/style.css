@@ -547,3 +547,8 @@ body[data-state="error"] .core { filter: drop-shadow(0 0 16px rgba(255, 79, 109,
 .song-lyrics { margin-top: 10px; max-width: min(100%, 560px); }
 .song-lyrics summary { cursor: pointer; color: var(--text-dim); font: 12px/1.5 var(--font-mono); }
 .song-lyrics pre { white-space: pre-wrap; font: 13px/1.5 var(--font-body); color: var(--text); margin: 6px 0 0; }
+.song-check { margin-top: 10px; padding: 4px 12px; background: none; border: 1px solid var(--line); color: var(--text-dim);
+  font: 12px/1.5 var(--font-mono); cursor: pointer; }
+.song-check:hover:not(:disabled) { color: var(--cyan-bright); border-color: var(--cyan-bright); }
+.song-check:disabled { opacity: 0.6; cursor: wait; }
+.song-check[hidden] { display: none; }

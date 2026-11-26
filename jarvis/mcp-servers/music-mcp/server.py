@@ -84,8 +84,30 @@ def _merge(songs, fresh):  # newer records replace older ones with the same id
     return merged + [s for s in fresh if not s.get("id") or s["id"] in by_id]
 
 
+async def _takes_many(client) -> bool:
+    """True when the supplier's status tool takes a list of ids (Suno's audio-wait: "ids"), so one call asks for all."""
+    entry = UPSTREAM.config()
+    try:
+        chosen = mapping.plan("get_song", await UPSTREAM.list_tools(client), entry["ops"])
+    except LookupError:
+        return False
+    schema = chosen["tool"]["input_schema"]
+    args, _ = mapping.build_args({"song_id": "x"}, schema, chosen["args"], chosen["fixed"])
+    properties = (schema or {}).get("properties") or {}
+    return any(value == ["x"] or ((properties.get(name) or {}).get("type") is None and name.lower().endswith("ids"))
+               for name, value in args.items())
+
+
+async def _ask(client, songs, ids, many):  # the latest records for these ids: one call with all of them, or one per id
+    for batch in ([ids] if many else [[one] for one in ids]):
+        data, text, _ = await _call(client, "get_song", {"song_id": batch if many else batch[0]})
+        songs = _merge(songs, normalize.songs(data, text))
+    return songs
+
+
 async def _wait(client, songs, task, deadline):
     """Ask for the songs until every one is ready or failed, or the deadline passes. Returns the latest records."""
+    many = await _takes_many(client)
     while time.monotonic() < deadline:
         waiting = [s["id"] for s in songs if s.get("id") and not s["ready"] and not normalize.failed(s)]
         ids = waiting or ([task] if task and not songs else [])
@@ -93,10 +115,8 @@ async def _wait(client, songs, task, deadline):
             break
         await asyncio.sleep(min(POLL, max(0.0, deadline - time.monotonic())))
         try:
-            for one in ids:
-                data, text, _ = await _call(client, "get_song", {"song_id": one})
-                songs = _merge(songs, normalize.songs(data, text))
-        except SupplierError:  # no status tool, or a hiccup: return what we have (the songs are in the library)
+            songs = await _ask(client, songs, ids, many)
+        except Exception:  # no status tool, a timeout or a hiccup: return what we have (the songs are in the library)
             break
     return songs
 
@@ -147,13 +167,20 @@ async def create_song(description: str = "", lyrics: str = "", style: str = "", 
     return await _safely(work)
 
 
-@mcp.tool(description="One song's details and status (audio link when it's ready), by the id create_song or list_songs gave.")
-async def get_song(song_id: str) -> dict:
+@mcp.tool(description="Songs' details and status (audio links when they're ready), by the ids create_song or list_songs "
+                      "gave: one in song_id, or several (up to 12) in song_ids.")
+async def get_song(song_id: str = "", song_ids: list[str] | None = None) -> dict:
     async def work():
-        one = check_id(song_id)
+        ids = list(dict.fromkeys(check_id(one) for one in [*([song_id] if song_id else []), *(song_ids or [])][:12]))
+        if not ids:
+            raise ValueError("Give a song id (song_id) or several (song_ids)")
         async with UPSTREAM.open() as client:
-            data, text, tool = await _call(client, "get_song", {"song_id": one})
-        songs = normalize.songs(data, text)
+            if len(ids) == 1:
+                data, text, tool = await _call(client, "get_song", {"song_id": ids[0]})
+                songs = normalize.songs(data, text)
+            else:
+                songs, text = await _ask(client, [], ids, await _takes_many(client)), ""
+                tool = mapping.plan("get_song", await UPSTREAM.list_tools(client), UPSTREAM.config()["ops"])["tool"]["name"]
         return {"ok": True, "supplier": UPSTREAM.config()["name"], "tool": tool, "status": _overall(songs), "songs": songs,
                 "message": "" if songs else " ".join(text.split())[:500]}
     return await _safely(work)

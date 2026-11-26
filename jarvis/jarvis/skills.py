@@ -761,6 +761,25 @@ def _https_only(song):  # links from the MCP server go into <audio>/<img>/<a>: h
             for k, v in song.items()}
 
 
+SONG_ID = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.:-]{0,99}$")  # the music server checks them too
+
+
+def check_songs(ids):
+    """The song card's "Check again": the latest records of songs still being made -> {status, songs, message}."""
+    ids = [str(one).strip() for one in (ids if isinstance(ids, list) else [])][:12]
+    if not ids or not all(SONG_ID.match(one) for one in ids):
+        raise ValueError("Give the ids of the songs to check")
+    try:
+        data = mcp_client.call_tool("music", "get_song", {"song_ids": ids}, timeout=150)
+    except mcp_client.McpError as failure:
+        raise RuntimeError(f"Music MCP call failed — {failure}") from None
+    data = data if isinstance(data, dict) else {}
+    if not data.get("ok"):
+        raise RuntimeError(f"Music MCP call failed — {data.get('error') or 'the tool returned no result'}")
+    return {"status": data.get("status"), "supplier": data.get("supplier"), "message": data.get("message") or "",
+            "songs": [_https_only(s) for s in data.get("songs") or []][:12]}
+
+
 class SongSkill(NotesFirst):  # Jarvis as an MCP client: writes the song, then calls the music MCP server (music-mcp/)
     name, title, noun = "song", "Songs", "song"
     description = ("Make a song through the music MCP server (Suno's official MCP server by default; uses your Suno "
