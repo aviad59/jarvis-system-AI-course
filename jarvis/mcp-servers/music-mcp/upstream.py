@@ -62,11 +62,28 @@ def supplier(env=None, config=None) -> dict:
 
 
 # ---------------------------------------------------------------- sign-in (OAuth)
+def _repoint(folder: Path):
+    """The store writes each collection's absolute folder into <collection>-info.json. If .tokens was copied or moved
+    (another checkout, a worktree), those paths point at the old place and every read fails with PathSecurityError.
+    Point them back inside this folder; the token files themselves don't carry a path."""
+    for info in folder.glob("*-info.json"):
+        try:
+            data = json.loads(info.read_text(encoding="utf-8"))
+            old = Path(str(data.get("directory") or ""))
+            new = (folder / info.name[: -len("-info.json")]).resolve()
+            if old.name and old != new:
+                data["directory"] = str(new)
+                info.write_text(json.dumps(data), encoding="utf-8")
+        except (OSError, ValueError, AttributeError):  # unreadable: leave it, the store reports it
+            continue
+
+
 def _store():
     from key_value.aio.stores.filetree import (FileTreeStore, FileTreeV1CollectionSanitizationStrategy,
                                                FileTreeV1KeySanitizationStrategy)
-    folder = token_dir()
+    folder = token_dir().resolve()
     folder.mkdir(parents=True, exist_ok=True)
+    _repoint(folder)
     return FileTreeStore(data_directory=folder,  # the sanitizers turn "https://..." keys into valid Windows file names
                          key_sanitization_strategy=FileTreeV1KeySanitizationStrategy(folder),
                          collection_sanitization_strategy=FileTreeV1CollectionSanitizationStrategy(folder))
