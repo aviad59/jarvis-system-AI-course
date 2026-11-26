@@ -74,7 +74,12 @@ class RagSkill(Skill):
         {"key": "skip_index", "label": "Skip indexing", "type": "bool", "default": True},
         {"key": "exclude_superseded", "label": "Exclude superseded", "type": "bool", "default": False},
         {"key": "top_k", "label": "Top-k", "type": "int", "default": 3, "min": 1, "max": 10},
+        {"key": "self_query", "label": "Chat filters (self-query)", "type": "bool", "default": True},
     ]
+
+    @staticmethod
+    def filtering(request):  # extract sender/time filters first? Only MongoDB can filter inside the vector search
+        return bool(request.get("self_query")) and request.get("source") == "mongodb"
 
     def validate(self, request):
         clean = super().validate(request)
@@ -92,11 +97,41 @@ class RagSkill(Skill):
         return rag.build_steps(request["question"], skip_index=request["skip_index"], hybrid=request["hybrid"],
                                top_k=request["top_k"], exclude_superseded=request["exclude_superseded"],
                                provider=request["provider"], model=request["model"] or None, source=request["source"],
-                               documents=request["documents"], history_file=rag.HISTORY if request.get("history") else None)
+                               documents=request["documents"], history_file=rag.HISTORY if request.get("history") else None,
+                               senders=request.get("senders"), date_from=request.get("date_from"),
+                               date_to=request.get("date_to"), query=request.get("query"))
 
     def stages(self, request):
         context = [{"id": "context", "title": "Understand follow-up"}] if request.get("rewrite") else []
+        if self.filtering(request):
+            context.append({"id": "self_query", "title": "Chat filters"})
         return context + [{"id": step["id"], "title": step["title"]} for step in self.steps(request)]
+
+    def extract_filters(self, request, run):  # "what did Omer say about X last week?" -> query X, sender, date range
+        run.emit("stage_start", stage="self_query", title="Chat filters")
+        started, model = time.time(), request["model"] or rag.DEFAULT_MODELS[request["provider"]]
+        outcome = "ok"
+        try:
+            found = rag.self_query(request["question"],
+                                   lambda prompt, schema: ask_json(prompt, schema, request["provider"], model))
+            for item in found["dropped"]:
+                run.emit("log", stage="self_query", line=f"dropped {item['field']} “{item['value']}”: {item['reason']}")
+                outcome = "warning"
+            if found["filtered"]:
+                when = " → ".join(v for v in (found["from"], found["to"]) if v)
+                run.emit("log", stage="self_query", line=f"search “{found['query']}”"
+                         + (f" · senders: {', '.join(found['senders'])}" if found["senders"] else "")
+                         + (f" · time: {when}" if when else ""))
+                request = {**request, "query": found["query"], "senders": found["senders"],
+                           "date_from": found["from"] or None, "date_to": found["to"] or None}
+            else:
+                run.emit("log", stage="self_query", line="no sender or time in the question: searching it as asked")
+        except Exception as error:  # no filters is always a safe answer: retrieval runs exactly as without self-query
+            outcome = "warning"
+            run.emit("log", stage="self_query", line=f"filter extraction failed ({type(error).__name__}), searching without filters")
+        run.check_cancelled()
+        run.emit("stage_end", stage="self_query", status=outcome, seconds=round(time.time() - started, 2))
+        return request
 
     def resolve(self, request, run):  # "and Harel?" -> "what does Harel like to eat?", so retrieval finds the right note
         run.emit("stage_start", stage="context", title="Understand follow-up")
@@ -119,6 +154,8 @@ class RagSkill(Skill):
             rag.HISTORY.write_text(json.dumps(request["history"], ensure_ascii=False), encoding="utf-8")
         if request.get("rewrite"):
             request = self.resolve(request, run)
+        if self.filtering(request):
+            request = self.extract_filters(request, run)
         env = rag.provider_env(request["provider"])  # fails before indexing, not at the last stage;
         # the key is passed to the child process only and never emitted
         for step in self.steps(request):
@@ -146,9 +183,13 @@ class RagSkill(Skill):
                  "document_id": r["metadata"].get("document_id"), "version": r["metadata"].get("version"),
                  "status": r["metadata"].get("status"), "title": r["metadata"].get("title"),
                  "source": r["metadata"].get("source"), "meeting_date": r["metadata"].get("meeting_date"),
-                 "project_id": r["metadata"].get("project_id")} for r in data["results"]]
+                 "project_id": r["metadata"].get("project_id"), "participants": r.get("participants"),
+                 "start_ts": r.get("start_ts"), "end_ts": r.get("end_ts")} for r in data["results"]]
+        if data["retrieval"].get("relaxed"):  # no chunk matched every filter: say what was dropped
+            run.emit("log", stage="retrieve", line="no chat chunk matched the filters; retried without: "
+                     + ", ".join(data["retrieval"]["relaxed"]))
         run.emit("retrieval", method=data["retrieval"]["method"], candidates=data["retrieval"].get("candidate_count"),
-                 results=rows)
+                 results=rows, filters=data["retrieval"].get("applied_filters"), relaxed=data["retrieval"].get("relaxed"))
 
     @staticmethod
     def emit_answer(run):

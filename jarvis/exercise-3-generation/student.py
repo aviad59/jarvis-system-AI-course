@@ -20,7 +20,10 @@ def assemble_context(question, results, max_chars):  # question + ranked chunks 
             continue
         seen.add(row["chunk_id"])
         used += len(row["text"])
-        sources.append({"chunk_id": row["chunk_id"], "text": row["text"], "metadata": row["metadata"]})  # exact text and source
+        source = {"chunk_id": row["chunk_id"], "text": row["text"], "metadata": row["metadata"]}  # exact text and source
+        if row.get("messages"):  # a chat chunk: text is "Sender [time]: ..."; messages say who said what, structured
+            source["messages"] = row["messages"]
+        sources.append(source)
     if not sources:
         raise ValueError(f"No source fits in max_chars={max_chars}; increase --max-chars or use smaller chunks")
     return {"question": question, "sources": sources}

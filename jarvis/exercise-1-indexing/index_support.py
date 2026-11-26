@@ -10,9 +10,13 @@ import os  # JARVIS_VAULT_INCLUDE
 import time  # תאריך עדכון של פתק לפי זמן שינוי הקובץ
 import urllib.error  # טוענים כלי עבור זיהוי שגיאת חיבור או API
 import urllib.request  # טוענים כלי עבור שליחת בקשות HTTP לספק embeddings
+import sys  # find chat_parser next to this file when loaded by path (Jarvis)
 from pathlib import Path  # משתמשים בנתיבים שמאפשרים לפתוח ולשמור את קבצי התרגיל
 
 BASE = Path(__file__).resolve().parent  # שומרים את BASE עבור המשך הפעולה
+if str(BASE) not in sys.path:
+    sys.path.append(str(BASE))  # appended: never shadows another folder's modules
+from chat_parser import is_chat_export  # noqa: E402  WhatsApp exports in the vault get message-aligned chunks
 REQUIRED = ("document_id", "version", "status", "updated", "source", "title")  # שומרים את REQUIRED עבור המשך הפעולה
 
 
@@ -145,6 +149,8 @@ def _read_vault(vault, files, quiet=False):
         for field in ("meeting_date", "project_id"):  # kept with every chunk when the note has them
             if props.get(field):
                 document[field] = props[field]
+        if is_chat_export(body):  # a WhatsApp export: chunked by message (chat_parser.py), not by paragraph
+            document["kind"] = "chat"
         documents.append(document)
     return documents
 

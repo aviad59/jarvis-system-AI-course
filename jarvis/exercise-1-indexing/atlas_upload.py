@@ -31,6 +31,11 @@ def vector_index_definition(dimensions):  # הגדרת אינדקס הווקטו
         {"type": "vector", "path": "embedding", "numDimensions": dimensions, "similarity": "cosine"},  # אותו מדד כמו בתרגיל 2
         {"type": "filter", "path": "metadata.status"},  # מאפשר לסנן גרסאות superseded בתוך החיפוש
         {"type": "filter", "path": "metadata.document_id"},  # מאפשר לסנן לפי מסמך
+        {"type": "filter", "path": "kind"},  # "chat" for chat chunks
+        {"type": "filter", "path": "chat_file"},  # chat chunks: which export
+        {"type": "filter", "path": "participants"},  # chat chunks: who wrote in it (sender filter)
+        {"type": "filter", "path": "start_ts"},  # chat chunks: first message time (time filter)
+        {"type": "filter", "path": "end_ts"},  # chat chunks: last message time (time filter)
     ]}  # סוף ההגדרה
 
 
@@ -113,12 +118,21 @@ def sync_index(data, settings, wait_seconds=180):  # מעלים index שלם ל�
     try:  # סוגרים את החיבור בסוף
         db = client[settings["db"]]  # מסד הנתונים
         collection = db[settings["collection"]]  # האוסף
-        docs = [{"_id": r["chunk_id"], **r} for r in records]  # chunk_id הוא גם _id
-        result = collection.bulk_write([ReplaceOne({"_id": d["_id"]}, d, upsert=True) for d in docs])  # כתיבה/עדכון של כל הקטעים
-        removed = collection.delete_many({"_id": {"$nin": [d["_id"] for d in docs]}}).deleted_count  # קטעים שאינם עוד ב־index
+        notes = [r for r in records if r.get("kind") != "chat"]  # note / document chunks
+        chats = [r for r in records if r.get("kind") == "chat"]  # chat chunks: their own schema and key (chat_store)
+        docs = [{"_id": r["chunk_id"], **r} for r in notes]  # chunk_id הוא גם _id
+        upserted = modified = 0
+        if docs:  # bulk_write refuses an empty list
+            result = collection.bulk_write([ReplaceOne({"_id": d["_id"]}, d, upsert=True) for d in docs])  # כתיבה/עדכון של כל הקטעים
+            upserted, modified = result.upserted_count, result.modified_count
+        removed = collection.delete_many({"kind": {"$ne": "chat"}, "_id": {"$nin": [d["_id"] for d in docs]}}).deleted_count  # קטעים שאינם עוד ב־index
         db["index_manifests"].replace_one({"_id": settings["collection"]}, {"_id": settings["collection"], **manifest}, upsert=True)  # ה־manifest לחיפוש
-        print(f"ATLAS: db={settings['db']} collection={settings['collection']} upserted={result.upserted_count} "  # דיווח
-              f"updated={result.modified_count} removed={removed} total={collection.count_documents({})}")  # ספירה מהשרת עצמו
+        print(f"ATLAS: db={settings['db']} collection={settings['collection']} upserted={upserted} "  # דיווח
+              f"updated={modified} removed={removed} total={collection.count_documents({})}")  # ספירה מהשרת עצמו
+        import chat_store  # the chats in the index replace the chats in the collection
+        chat = chat_store.sync(db, collection, [chat_store.mongo_doc(r, manifest) for r in chats], all_files=True)
+        print(f"ATLAS CHATS: inserted={chat['inserted']} updated={chat['updated']} removed={chat['removed']} "
+              f"chunks={chat['chunks']} participants={chat['participants']}")
         ensure_vector_index(collection, settings["vector_index"], manifest["dimensions"], wait_seconds)  # אינדקס הווקטורים
     finally:  # גם במקרה של שגיאה
         client.close()  # סוגרים חיבור
