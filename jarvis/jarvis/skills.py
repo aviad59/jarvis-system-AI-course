@@ -769,15 +769,17 @@ def check_songs(ids):
     ids = [str(one).strip() for one in (ids if isinstance(ids, list) else [])][:12]
     if not ids or not all(SONG_ID.match(one) for one in ids):
         raise ValueError("Give the ids of the songs to check")
+    log = []  # not a run: the server's log lines go back with the answer, and the console adds them to the Mission log
     try:
-        data = mcp_client.call_tool("music", "get_song", {"song_ids": ids}, timeout=150)
+        data = mcp_client.call_tool("music", "get_song", {"song_ids": ids}, timeout=150,
+                                    log=lambda line: len(log) < 200 and log.append(line))
     except mcp_client.McpError as failure:
         raise RuntimeError(f"Music MCP call failed — {failure}") from None
     data = data if isinstance(data, dict) else {}
     if not data.get("ok"):
         raise RuntimeError(f"Music MCP call failed — {data.get('error') or 'the tool returned no result'}")
     return {"status": data.get("status"), "supplier": data.get("supplier"), "message": data.get("message") or "",
-            "songs": [_https_only(s) for s in data.get("songs") or []][:12]}
+            "songs": [_https_only(s) for s in data.get("songs") or []][:12], "log": list(log)}
 
 
 class SongSkill(NotesFirst):  # Jarvis as an MCP client: writes the song, then calls the music MCP server (music-mcp/)

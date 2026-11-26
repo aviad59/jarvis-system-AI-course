@@ -27,6 +27,7 @@ DONE = {"complete", "completed", "succeeded", "success", "done", "ready", "finis
 FAILED = {"error", "failed", "failure", "rejected", "cancelled", "canceled", "expired"}
 WAITING = {"submitted", "queued", "pending", "processing", "running", "generating", "inprogress", "created", "starting"}
 AUDIO_FILE = re.compile(r"\.(?:mp3|wav|m4a|ogg|flac|aac)(?:$|[?#])", re.I)
+SONG_PAGE = re.compile(r"/(?:songs?|tracks?|clips?|share|s)/[^/?#]+/?$", re.I)  # https://suno.com/song/<id>: a web page
 LINK = re.compile(r"https://[^\s\"'<>()\[\]]+")
 
 
@@ -87,13 +88,19 @@ def _status(value) -> str:
     return _key(value)[:40] if isinstance(value, str) else ""
 
 
-def ready(song) -> bool:  # playable: done, or audio is there and the supplier doesn't say it's still waiting
+def ready(song) -> bool:  # playable: done, or audio (or a player) is there and the supplier doesn't say it's still waiting
     status = song.get("status") or ""
-    return status in DONE or (bool(song.get("audio_url")) and status not in WAITING and status not in FAILED)
+    playable = bool(song.get("audio_url") or song.get("embed_url"))
+    return status in DONE or (playable and status not in WAITING and status not in FAILED)
 
 
 def failed(song) -> bool:
     return (song.get("status") or "") in FAILED
+
+
+def page_link(url) -> bool:  # a song's web page, not its audio (Suno's song_url is https://suno.com/song/<id>)
+    parts = urlsplit(url)
+    return not AUDIO_FILE.search(url) and not parts.query and bool(SONG_PAGE.search(parts.path))
 
 
 def _song(record) -> dict | None:
@@ -102,6 +109,9 @@ def _song(record) -> dict | None:
     if not audio and url and AUDIO_FILE.search(url):  # {"url": ".../song.mp3"}
         audio = url
     audio = https(audio) if isinstance(audio, str) else None
+    page_from_audio = audio if audio and page_link(audio) else None
+    if page_from_audio:  # an <audio> player can't play a web page: keep it as the page link
+        audio = None
     song_id = _find(record, ID, nested=False)
     song_id = str(song_id)[:100] if isinstance(song_id, (str, int)) and not isinstance(song_id, bool) else None
     title, status = _find(record, TITLE, nested=False), _status(_find(record, STATUS, nested=False))
@@ -109,7 +119,7 @@ def _song(record) -> dict | None:
     if not (audio or (song_id and (title or status or image))):
         return None
     page = _find(record, PAGE, nested=False)
-    page = https(page) if isinstance(page, str) and page != audio else None
+    page = (https(page) if isinstance(page, str) and page != audio else None) or page_from_audio
     duration = _find(record, DURATION)
     style, lyrics = _find(record, STYLE), _find(record, LYRICS)
     song = {"id": song_id, "title": str(title)[:200] if isinstance(title, (str, int)) else "", "status": status,
@@ -121,7 +131,28 @@ def _song(record) -> dict | None:
     return song
 
 
-def songs(data, text="") -> list[dict]:
+SAFE_ID = re.compile(r"^[A-Za-z0-9_-]{1,100}$")
+
+
+def add_embed(found, template) -> list[dict]:
+    """Songs without an audio link get the supplier's embeddable player, built from their id (suppliers.json "embed").
+    Suno gives apps no audio file ("This app can't stream suno.com songs"), but https://suno.com/embed/<id> plays."""
+    for song in found:
+        song.setdefault("embed_url", None)
+        status = song.get("status") or ""
+        if (isinstance(template, str) and not song.get("audio_url") and status not in WAITING and status not in FAILED
+                and song.get("id") and SAFE_ID.match(song["id"])):  # not before it plays ("streaming" / "complete")
+            song["embed_url"] = https(template.replace("{id}", song["id"]))
+            song["ready"] = ready(song)
+    return found
+
+
+def songs(data, text="", embed=None) -> list[dict]:
+    """The songs in a result; `embed` = the supplier's player link template for songs without audio (add_embed)."""
+    return add_embed(_songs(data, text), embed)
+
+
+def _songs(data, text="") -> list[dict]:
     found, seen = [], set()
 
     def walk(value, depth=0):

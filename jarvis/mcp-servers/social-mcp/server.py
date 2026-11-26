@@ -1,9 +1,38 @@
 # Free MCP server for public YouTube Shorts.
 # Uses yt-dlp to read public pages: no API key, no account, no login, no cost.
+import functools
+import sys
+import time
+
 from fastmcp import FastMCP
 from yt_dlp import YoutubeDL
 
 mcp = FastMCP("youtube-shorts")
+NAME = "youtube-shorts"
+
+def log(message):  # stderr is the server's log (stdout is the MCP channel): Jarvis shows it in the Mission log
+    print(f"{NAME}: {message}", file=sys.stderr, flush=True)
+
+
+def logged(tool):  # each call's start, outcome and time in the log (the arguments are in Jarvis's "MCP: call" line)
+    @functools.wraps(tool)
+    def run(*args, **kwargs):
+        started = time.monotonic()
+        log(f"{tool.__name__} ...")
+        try:
+            result = tool(*args, **kwargs)
+        except Exception as error:
+            log(f"{tool.__name__} failed in {time.monotonic() - started:.1f}s: {type(error).__name__}: "
+                f"{' '.join(str(error).split())[:200]}")
+            raise
+        seconds = time.monotonic() - started
+        if isinstance(result, dict) and not result.get("ok", True):
+            log(f"{tool.__name__} failed in {seconds:.1f}s: {result.get('error')}")
+        else:
+            count = result.get("count") if isinstance(result, dict) else None
+            log(f"{tool.__name__} done in {seconds:.1f}s{f': {count} result(s)' if count is not None else ''}")
+        return result
+    return run
 
 MAX_LIMIT = 25
 
@@ -56,6 +85,7 @@ def _list(url: str, limit: int, details: bool) -> dict:
 
 @mcp.tool(description="Get the latest YouTube Shorts of a channel. `channel` is a handle like '@MrBeast' or a channel URL. "
                       "Set details=true for likes, comments, description and date (slower).")
+@logged
 def get_youtube_shorts(channel: str, limit: int = 10, details: bool = False) -> dict:
     channel = channel.strip().rstrip("/")
     if not channel.startswith("http"):
@@ -66,6 +96,7 @@ def get_youtube_shorts(channel: str, limit: int = 10, details: bool = False) -> 
 
 
 @mcp.tool(description="Search YouTube Shorts by keyword or hashtag. Set details=true for likes, comments, description and date (slower).")
+@logged
 def search_youtube_shorts(query: str, limit: int = 10, details: bool = False) -> dict:
     limit = max(1, min(limit, MAX_LIMIT))
     q = query.strip()
@@ -75,6 +106,7 @@ def search_youtube_shorts(query: str, limit: int = 10, details: bool = False) ->
 
 
 @mcp.tool(description="Get full details of a single public YouTube Short or video URL.")
+@logged
 def get_post_details(url: str) -> dict:
     with _ydl(flat=False) as ydl:
         info = ydl.extract_info(url, download=False)

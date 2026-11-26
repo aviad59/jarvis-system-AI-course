@@ -11,11 +11,13 @@
 # Hebrew: the public API's fonts have no Hebrew letters (they render as empty boxes), so memes with Hebrew text
 # are drawn here with Pillow, on the template's blank image, at the text positions from Memegen's own template
 # config, right to left. Nothing is sent anywhere but the Memegen API (and GitHub, for those template layouts).
+import functools
 import hashlib
 import ipaddress
 import os
 import re
 import socket
+import sys
 import time
 from io import BytesIO
 from pathlib import Path
@@ -25,6 +27,31 @@ import httpx
 from fastmcp import FastMCP
 
 mcp = FastMCP("memes")
+NAME = "memes"
+
+def log(message):  # stderr is the server's log (stdout is the MCP channel): Jarvis shows it in the Mission log
+    print(f"{NAME}: {message}", file=sys.stderr, flush=True)
+
+
+def logged(tool):  # each call's start, outcome and time in the log (the arguments are in Jarvis's "MCP: call" line)
+    @functools.wraps(tool)
+    def run(*args, **kwargs):
+        started = time.monotonic()
+        log(f"{tool.__name__} ...")
+        try:
+            result = tool(*args, **kwargs)
+        except Exception as error:
+            log(f"{tool.__name__} failed in {time.monotonic() - started:.1f}s: {type(error).__name__}: "
+                f"{' '.join(str(error).split())[:200]}")
+            raise
+        seconds = time.monotonic() - started
+        if isinstance(result, dict) and not result.get("ok", True):
+            log(f"{tool.__name__} failed in {seconds:.1f}s: {result.get('error')}")
+        else:
+            count = result.get("count") if isinstance(result, dict) else None
+            log(f"{tool.__name__} done in {seconds:.1f}s{f': {count} result(s)' if count is not None else ''}")
+        return result
+    return run
 
 BASE = os.environ.get("MEMEGEN_BASE_URL", "https://api.memegen.link").rstrip("/")
 LAYOUTS_URL = "https://raw.githubusercontent.com/jacebrowning/memegen/main/templates/{id}/config.yml"
@@ -247,6 +274,7 @@ def render_locally(client, template: dict, lines: list[str], layout: str | None)
 # ---------------------------------------------------------------- tools
 @mcp.tool(description="List meme templates. `filter` matches the name, id or keywords (e.g. 'drake', 'cat', 'success'). "
                       "Returns ids to use with generate_meme, the number of text lines each takes, and an example.")
+@logged
 def list_templates(filter: str = "", animated: bool = False, limit: int = 30) -> dict:
     with httpx.Client(timeout=TIMEOUT) as client:
         if filter or animated:
@@ -259,6 +287,7 @@ def list_templates(filter: str = "", animated: bool = False, limit: int = 30) ->
 
 
 @mcp.tool(description="Details of one meme template: name, how many text lines it takes, styles, keywords, example.")
+@logged
 def get_template(template_id: str) -> dict:
     template_id = _template_id(template_id)
     with httpx.Client(timeout=TIMEOUT) as client:
@@ -272,6 +301,7 @@ def get_template(template_id: str) -> dict:
                       "Write normal text: spaces and punctuation are handled. Hebrew is supported (drawn locally). "
                       "extension: png, jpg, gif, webp. Optional font (thick, thin, comic, impact, notosans), style, "
                       "layout (default or top). Returns the image URL, or a local file for Hebrew memes.")
+@logged
 def generate_meme(template_id: str, text_lines: list[str], extension: str = "png", font: str = "",
                   style: str = "", layout: str = "") -> dict:
     template_id, lines = _template_id(template_id), _lines(text_lines)
@@ -297,6 +327,7 @@ def generate_meme(template_id: str, text_lines: list[str], extension: str = "png
 
 @mcp.tool(description="Make a meme on your own background image (a public http(s) image URL) with text lines. "
                       "Local and private-network addresses are refused. Latin text only (Hebrew: use a template).")
+@logged
 def generate_custom_meme(background_url: str, text_lines: list[str], extension: str = "png", font: str = "") -> dict:
     background_url, lines = _public_url(background_url), _lines(text_lines)
     if any(HEBREW.search(line) for line in lines):
@@ -312,6 +343,7 @@ def generate_custom_meme(background_url: str, text_lines: list[str], extension: 
 
 
 @mcp.tool(description="Find example memes whose template matches a word (e.g. 'success', 'cat'): inspiration and formats.")
+@logged
 def search_meme_examples(query: str, limit: int = 10) -> dict:
     query = str(query or "").strip()[:100]
     if not query:

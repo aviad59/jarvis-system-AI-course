@@ -7,7 +7,8 @@
 # Switching supplier = a new entry in suppliers.json (or MUSIC_SUPPLIER / MUSIC_MCP_URL); Jarvis doesn't change.
 #
 # Safety: inputs are bounded and ids validated; only https suppliers and https links in results; the sign-in token
-# stays in .tokens/ (git-ignored) and is never printed or logged; no argument logging; a tool call never opens a
+# stays in .tokens/ (git-ignored) and is never printed or logged; the log (stderr: Jarvis's Mission log) has tool
+# names, sizes, ids, timings and errors, never the arguments' text; a tool call never opens a
 # browser. What you describe is sent to the supplier, nothing else leaves this computer.
 import asyncio
 import os
@@ -19,7 +20,7 @@ from fastmcp import FastMCP
 import mapping
 import normalize
 import upstream
-from upstream import NotSignedIn, SupplierError
+from upstream import NotSignedIn, SupplierError, log
 
 mcp = FastMCP("music")
 UPSTREAM = upstream.Upstream()
@@ -59,8 +60,9 @@ def check_id(value) -> str:
 
 
 # ---------------------------------------------------------------- calls to the supplier
-async def _call(client, op, ours):
-    """One supplier tool call for one of our ops -> (data, text, tool name). SupplierError if it fails."""
+async def _call(client, op, ours, quiet=False):
+    """One supplier tool call for one of our ops -> (data, text, tool name). SupplierError if it fails.
+    quiet: only a failure is logged (the polls while waiting; _wait logs their progress)."""
     entry = UPSTREAM.config()
     tools = await UPSTREAM.list_tools(client)
     try:
@@ -69,12 +71,19 @@ async def _call(client, op, ours):
         raise SupplierError(f"{entry['name']}: {missing}") from None
     tool = chosen["tool"]
     args, _ = mapping.build_args(ours, tool["input_schema"], chosen["args"], chosen["fixed"], chosen.get("modes"))
+    started = time.monotonic()
+    if not quiet:
+        log(f"{op} -> {entry['name']} {tool['name']}({', '.join(args) or 'no arguments'})")
     result = await client.call_tool(tool["name"], args, raise_on_error=False, timeout=120)
     texts = [getattr(c, "text", "") for c in result.content or [] if getattr(c, "type", "") == "text"]
     links = [str(getattr(c, "uri", "")) for c in result.content or [] if getattr(c, "type", "") == "resource_link"]
     data, text = normalize.payload(result.structured_content, texts, links)
+    seconds = time.monotonic() - started
     if result.is_error:
+        log(f"{tool['name']} failed in {seconds:.1f}s")
         raise SupplierError(f"{entry['name']} ({tool['name']}): {' '.join(text.split())[:300] or 'the tool failed'}")
+    if not quiet:
+        log(f"{tool['name']} answered in {seconds:.1f}s ({len(text)} chars of text{', structured data' if data else ''})")
     return data, text, tool["name"]
 
 
@@ -98,16 +107,18 @@ async def _takes_many(client) -> bool:
                for name, value in args.items())
 
 
-async def _ask(client, songs, ids, many):  # the latest records for these ids: one call with all of them, or one per id
+async def _ask(client, songs, ids, many, quiet=False):  # the latest records for these ids: one call for all, or one per id
     for batch in ([ids] if many else [[one] for one in ids]):
-        data, text, _ = await _call(client, "get_song", {"song_id": batch if many else batch[0]})
-        songs = _merge(songs, normalize.songs(data, text))
+        data, text, _ = await _call(client, "get_song", {"song_id": batch if many else batch[0]}, quiet)
+        songs = _merge(songs, normalize.songs(data, text, UPSTREAM.config().get("embed")))
     return songs
 
 
 async def _wait(client, songs, task, deadline):
     """Ask for the songs until every one is ready or failed, or the deadline passes. Returns the latest records."""
-    many = await _takes_many(client)
+    many, started, said = await _takes_many(client), time.monotonic(), (_progress(songs), time.monotonic())
+    log(f"waiting up to {deadline - started:.0f}s for {_progress(songs) if songs else 'task ' + str(task)}, "
+        f"asking {'once for all of them' if many else 'per song'} every {POLL:g}s")
     while time.monotonic() < deadline:
         waiting = [s["id"] for s in songs if s.get("id") and not s["ready"] and not normalize.failed(s)]
         ids = waiting or ([task] if task and not songs else [])
@@ -115,10 +126,25 @@ async def _wait(client, songs, task, deadline):
             break
         await asyncio.sleep(min(POLL, max(0.0, deadline - time.monotonic())))
         try:
-            songs = await _ask(client, songs, ids, many)
-        except Exception:  # no status tool, a timeout or a hiccup: return what we have (the songs are in the library)
+            songs = await _ask(client, songs, ids, many, quiet=True)
+        except Exception as error:  # no status tool, a timeout or a hiccup: return what we have (the songs are in the library)
+            log(f"stopped waiting ({type(error).__name__}: {' '.join(str(error).split())[:200]})")
             break
+        now = (_progress(songs), time.monotonic())
+        if now[0] != said[0] or now[1] - said[1] >= 30:  # a change, or a sign of life every 30 s
+            log(f"after {now[1] - started:.0f}s: {now[0]}")
+            said = now
+    else:
+        log(f"gave up waiting after {time.monotonic() - started:.0f}s: {_progress(songs)}")
     return songs
+
+
+def _progress(songs) -> str:  # "2 songs: 1 ready, 1 being made"
+    ready = sum(1 for s in songs if s["ready"])
+    failed = sum(1 for s in songs if not s["ready"] and normalize.failed(s))
+    making = len(songs) - ready - failed
+    parts = [f"{ready} ready", *([f"{failed} failed"] if failed else []), *([f"{making} being made"] if making else [])]
+    return f"{len(songs)} song{'s' if len(songs) != 1 else ''}: {', '.join(parts)}"
 
 
 def _overall(songs) -> str:
@@ -129,13 +155,31 @@ def _overall(songs) -> str:
     return "pending"
 
 
-async def _safely(work) -> dict:
+async def _safely(tool, work, about="") -> dict:
+    """Run one tool: its start, outcome and time go to the log; any failure comes back as {ok: false, error}."""
+    started = time.monotonic()
+    log(f"{tool}{' (' + about + ')' if about else ''}")
     try:
-        return await work()
+        result = await work()
     except (NotSignedIn, SupplierError, ValueError) as error:
-        return {"ok": False, "error": str(error)}
+        result = {"ok": False, "error": str(error)}
     except Exception as error:  # never a traceback to the caller
-        return {"ok": False, "error": f"{type(error).__name__}: {' '.join(str(error).split())[:300]}"}
+        result = {"ok": False, "error": f"{type(error).__name__}: {' '.join(str(error).split())[:300]}"}
+    seconds = time.monotonic() - started
+    if result.get("ok"):
+        summary = [f"status {result['status']}" if result.get("status") else "",
+                   _progress(result["songs"]) if result.get("songs") else "",
+                   f"credits {result['credits']}" if result.get("credits") is not None else "",
+                   f"{len(result['tools'])} supplier tools" if result.get("tools") else ""]
+        summary = ", ".join(part for part in summary if part)
+        log(f"{tool} done in {seconds:.1f}s{': ' + summary if summary else ''}")
+    else:
+        log(f"{tool} failed in {seconds:.1f}s: {result['error']}")
+    return result
+
+
+def _sizes(**fields) -> str:  # what a call carries, without its text: "description 120 chars, lyrics 640 chars"
+    return ", ".join(f"{name} {len(str(value))} chars" for name, value in fields.items() if value)
 
 
 # ---------------------------------------------------------------- tools
@@ -150,7 +194,7 @@ async def create_song(description: str = "", lyrics: str = "", style: str = "", 
         started = time.monotonic()
         async with UPSTREAM.open() as client:
             data, text, tool = await _call(client, "create_song", ours)
-            songs, task = normalize.songs(data, text), normalize.task_id(data)
+            songs, task = normalize.songs(data, text, UPSTREAM.config().get("embed")), normalize.task_id(data)
             if wait and WAIT > 0:
                 songs = await _wait(client, songs, task, started + WAIT)
         status, name = _overall(songs), UPSTREAM.config()["name"]
@@ -164,7 +208,9 @@ async def create_song(description: str = "", lyrics: str = "", style: str = "", 
             message = " ".join(text.split())[:500] or f"{name} started the song; it will appear in your library."
         return {"ok": True, "supplier": name, "tool": tool, "status": status, "songs": songs,
                 "task_id": task if not songs else None, "message": message}
-    return await _safely(work)
+    flags = f"instrumental: {'yes' if instrumental else 'no'}, wait: {'yes' if wait else 'no'}"
+    about = _sizes(description=description, lyrics=lyrics, style=style, title=title)
+    return await _safely("create_song", work, ", ".join(part for part in (about, flags) if part))
 
 
 @mcp.tool(description="Songs' details and status (audio links when they're ready), by the ids create_song or list_songs "
@@ -177,13 +223,14 @@ async def get_song(song_id: str = "", song_ids: list[str] | None = None) -> dict
         async with UPSTREAM.open() as client:
             if len(ids) == 1:
                 data, text, tool = await _call(client, "get_song", {"song_id": ids[0]})
-                songs = normalize.songs(data, text)
+                songs = normalize.songs(data, text, UPSTREAM.config().get("embed"))
             else:
                 songs, text = await _ask(client, [], ids, await _takes_many(client)), ""
                 tool = mapping.plan("get_song", await UPSTREAM.list_tools(client), UPSTREAM.config()["ops"])["tool"]["name"]
         return {"ok": True, "supplier": UPSTREAM.config()["name"], "tool": tool, "status": _overall(songs), "songs": songs,
                 "message": "" if songs else " ".join(text.split())[:500]}
-    return await _safely(work)
+    count = len([one for one in [song_id, *(song_ids or [])] if one])
+    return await _safely("get_song", work, f"{count} id{'s' if count != 1 else ''}")
 
 
 @mcp.tool(description="Your latest songs in the music supplier's library (newest first), with audio links.")
@@ -192,9 +239,9 @@ async def list_songs(limit: int = 10) -> dict:
         count = max(1, min(int(limit), 50))
         async with UPSTREAM.open() as client:
             data, text, tool = await _call(client, "list_songs", {"limit": count})
-        songs = normalize.songs(data, text)[:count]
+        songs = normalize.songs(data, text, UPSTREAM.config().get("embed"))[:count]
         return {"ok": True, "supplier": UPSTREAM.config()["name"], "tool": tool, "count": len(songs), "songs": songs}
-    return await _safely(work)
+    return await _safely("list_songs", work, f"limit {limit}")
 
 
 @mcp.tool(description="How many credits are left on the music supplier account (each song uses some).")
@@ -204,7 +251,7 @@ async def get_credits() -> dict:
             data, text, tool = await _call(client, "get_credits", {})
         return {"ok": True, "supplier": UPSTREAM.config()["name"], "tool": tool,
                 "credits": normalize.credits(data, text), "details": normalize.brief(data, text)}
-    return await _safely(work)
+    return await _safely("get_credits", work)
 
 
 @mcp.tool(description="The music supplier in use and the tools it offers, with which of them each of our tools uses. "
@@ -223,7 +270,7 @@ async def supplier_tools() -> dict:
         return {"ok": True, "supplier": entry["name"], "key": entry["key"], "url": entry["url"], "auth": entry["auth"],
                 "uses": uses, "tools": [{"name": t["name"], "description": " ".join(t["description"].split())[:300],
                                          "arguments": sorted((t["input_schema"].get("properties") or {}))} for t in tools]}
-    return await _safely(work)
+    return await _safely("supplier_tools", work)
 
 
 if __name__ == "__main__":
