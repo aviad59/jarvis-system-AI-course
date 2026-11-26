@@ -14,6 +14,7 @@ Everything needed to run it is in this folder.
 | `jarvis/` | Console | Web console + voice + **vault watcher** that re-indexes when notes change |
 | `mcp-servers/social-mcp/` | MCP tool | **YouTube Shorts** skill: Jarvis calls the free `youtube-shorts` MCP server (no login). *Ask Jarvis* sends YouTube requests there automatically. Set it up once, see `social-mcp/README.md` |
 | `mcp-servers/meme-mcp/` | MCP tool | **Memes** skill: Jarvis calls the `memes` MCP server (open-source Memegen, free; Hebrew drawn locally). *Ask Jarvis* sends "make a meme about ..." there. See `meme-mcp/README.md` |
+| `mcp-servers/music-mcp/` | MCP tool | **Songs** skill: Jarvis calls the `music` MCP server, which talks to Suno's official MCP server (or another supplier in `suppliers.json`). *Ask Jarvis* sends "make a song about ..." there. Sign in once with `login.py`. See `music-mcp/README.md` |
 
 Vault: `C:\Users\maest\Documents\Obsidian Vault` by default (set `JARVIS_VAULT` to change it).
 Every note in the vault is indexed, in any folder (a new folder too); `.obsidian`, `Templates`, `Drafts`

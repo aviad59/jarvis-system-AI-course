@@ -1,7 +1,7 @@
 # Jarvis system — AI course
 
 A Jarvis-style assistant built session by session: a RAG pipeline over documents (session 4), then over
-your own Obsidian vault with MCP tools for YouTube Shorts and memes (session 5). Jarvis itself lives in
+your own Obsidian vault with MCP tools for YouTube Shorts, memes and songs (session 5 onward). Jarvis itself lives in
 its own folder and keeps growing; the session folders hold each session's material.
 
 | Folder | What's inside |
@@ -9,6 +9,7 @@ its own folder and keeps growing; the session folders hold each session's materi
 | [`jarvis/`](jarvis/) | **The current Jarvis.** The console, voice in/out (Hebrew + English), conversation memory, one "Ask Jarvis" box, and the RAG pipeline over the Obsidian vault with live re-indexing. |
 | [`jarvis/mcp-servers/social-mcp/`](jarvis/mcp-servers/social-mcp/) | MCP server: public YouTube Shorts (free, no login). |
 | [`jarvis/mcp-servers/meme-mcp/`](jarvis/mcp-servers/meme-mcp/) | MCP server: memes (open-source Memegen; Hebrew drawn locally). |
+| [`jarvis/mcp-servers/music-mcp/`](jarvis/mcp-servers/music-mcp/) | MCP server: songs, in front of Suno's official MCP server (sign in with your Suno account; any other MCP music supplier through `suppliers.json`). |
 | [`session-4/`](session-4/) | The RAG exercises (indexing → retrieval → generation), `rag.py`, and the first Jarvis console, as they were in session 4. Start with `session-4/START-HERE.html`. |
 | [`session-5/`](session-5/) | Session 5 material: start with `session-5/START-HERE.html` (Hebrew: `session-5/פתחו-כאן.html`), and the workshop exercises (vault, MCP, FastMCP) in `session-5/workshop/`. |
 

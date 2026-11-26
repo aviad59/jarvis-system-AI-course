@@ -8,6 +8,7 @@
   route("תמצא לי שורטס על מה שהצוות אוהב לאכול") -> combo: answer from the notes, then Shorts built from the answer
   route("make a meme about monday meetings")       -> meme (the memes MCP server; "תעשה מם על..." too)
   route("tell me a joke about programmers")         -> meme too: a joke is answered with a meme ("תספר לי בדיחה")
+  route("make a song about monday meetings")       -> song (the music MCP server; "תעשה לי שיר על..." too)
   route("system check") / route("בדיקת מערכות")      -> status
   route("/shorts cats") / route("/docs ...")         -> force a skill
 
@@ -55,7 +56,8 @@ CLAUSES = re.compile(r"[?!.\n]+|\s+(?:and\s+then|then|and)\s+(?=(?:find|show|sea
                      r"\s+ו(?=(?:תמצא|תחפש|תראה|תביא|תן|מצא|חפש|הראה|תציג)(?:\s|$))", re.I)
 PRONOUN = re.compile(r"(?:^|\s)(?:it|that|this|them|those|these|זה|זאת|זו|הזה|הזאת|אותו|אותה|אותם)(?=\s|$)", re.I)
 FORCE = {"docs": "rag", "rag": "rag", "ask": "rag", "shorts": "shorts", "youtube": "shorts", "yt": "shorts",
-         "meme": "meme", "memes": "meme", "status": "status", "sync": "vault_sync"}
+         "meme": "meme", "memes": "meme", "song": "song", "songs": "song", "music": "song",
+         "status": "status", "sync": "vault_sync"}
 # "make a meme about ..." / "תעשה לי מם על ...": the meme word plus a make verb (a question about memes stays with the notes)
 MEME = re.compile(r"\bmemes?\b|(?:^|\s)(?:ה?מם|ה?מימ|ה?ממים|ה?מימים|מימז)(?=[\s?!.,:]|$)", re.I)
 # "תיצור לימים על..." (= "לי מימים", typed together): only with a make verb, since "לימים" alone means "later on"
@@ -65,6 +67,20 @@ MEME_JOINED = re.compile(r"(?:^|\s)(?:לי|ל)(?:מם|מימ|ממים|מימים
 MEME_HEARD = re.compile(r"(?:^|\s)(?:מימס|ממז)(?=[\s?!.,:]|$)|(?:^|\s)ה?מים\s+(?:על|של|עם|בנושא)(?=\s|$)")
 MAKE = re.compile(r"\b(?:make|create|generate|build|draw|do|give|send|write)\b|"
                   r"(?:^|\s)(?:תעשה|תעשי|תכין|תכיני|צור|תיצור|תייצר|עשה|הכן|תן|תני|תביא|תמציא|תכתוב)(?=\s|$)", re.I)
+# "make a song about ..." / "תעשה לי שיר על ...": a song word plus a make verb. "שיר" is also a name (Shir), so never
+# without the verb; a question about a song ("what song did we pick?", "מה השיר של הצוות?") stays with the notes.
+SONG = re.compile(r"\b(?:songs?|tracks?|tunes?|jingles?|anthems?|ballads?|lullaby|lullabies|raps?|music)\b|"
+                  r"(?:^|\s)(?:ה?שיר|ה?שירים|ה?שירון|ג['׳]ינגל|ה?המנון|ה?ראפ|ה?מוזיקה|ה?מנגינה|ה?בלדה)(?=[\s?!.,:]|$)", re.I)
+SONG_MAKE = re.compile(r"\b(?:compose|sing|produce|record)\b|(?:^|\s)(?:תלחין|תלחיני|תשיר|תשירי|תחבר|תחברי|תפיק)(?=\s|$)", re.I)
+# The request is the song itself: "song about cats", "i want a song about cats", "play me a jingle for the team",
+# "שיר על חתולים", "אני רוצה שיר על הצוות", "בא לי שיר על הים". The wish has to be right before the song word, so
+# "Shir wants to talk" ("שיר רוצה לדבר") and "i like that song" stay with the notes.
+_SONG_WORD = r"(?:songs?|jingles?|anthems?|ballads?|lullaby|raps?|tunes?)"
+_SHIR_WORD = r"(?:שיר|ג['׳]ינגל|המנון|ראפ|בלדה)"
+SONG_ABOUT = re.compile(rf"^\s*(?:(?:i\s+)?(?:want|need|would\s+like|'d\s+like|play)\s+(?:me\s+)?)?(?:an?\s+|some\s+)?"
+                        rf"{_SONG_WORD}\s+(?:about|for|on)\b|"
+                        rf"^\s*(?:(?:אני\s+)?(?:רוצה|צריך|צריכה|תשמיע|תשמיעי|בא)\s+(?:לי\s+)?)?{_SHIR_WORD}\s+"
+                        rf"(?:על|בנושא|עבור|ל(?=\S))", re.I)
 # A joke request is answered with a meme: "tell me a joke", "make me laugh", "תספר לי בדיחה", "תצחיק אותי".
 # A question about a joke ("what joke did Idan tell at the meeting?") stays with the notes.
 JOKE = re.compile(r"\bjokes?\b|\bmake\s+(?:me|us)\s+laugh\b|\bsomething\s+funny\b|\bcheer\s+me\s+up\b|"
@@ -83,7 +99,7 @@ FILLER = re.compile(
 
 @dataclass
 class Route:
-    skill: str  # rag | shorts | combo | meme | status | vault_sync
+    skill: str  # rag | shorts | combo | meme | song | status | vault_sync
     question: str = ""  # what the target skill receives
     options: dict = field(default_factory=dict)  # extra request values, e.g. {"mode": "channel", "limit": 5}
     reason: str = ""  # shown in the console: why this skill was chosen
@@ -129,6 +145,10 @@ def route(text):
     if (MEME.search(text) and (MAKE.search(text) or not (QUESTION.match(text) or STRONG.search(text)))) or \
             ((MEME_JOINED.search(text) or MEME_HEARD.search(text)) and MAKE.search(text)):
         return Route("meme", text, {}, "meme request → the memes MCP server")
+    if ((SONG.search(text) and (MAKE.search(text) or SONG_MAKE.search(text)))
+            or (SONG_ABOUT.search(text) and not text.rstrip().endswith("?"))) \
+            and not QUESTION.match(text) and not STRONG.search(text):
+        return Route("song", text, {}, "song request → the music MCP server")
     if JOKE.search(text) and not STRONG.search(text) and (MAKE.search(text) or TELL.search(text) or not QUESTION.match(text)):
         return Route("meme", text, {}, "joke request → a meme from the memes MCP server")
     if SYNC.match(text):
@@ -188,6 +208,8 @@ TOOLS = [
      "description": "Answer from the notes, then search YouTube Shorts about the answer."},
     {"name": "make_meme", "server": "memes", "tool": "generate_meme", "input": "what the meme is about",
      "description": "Make a meme. Also for jokes ('tell me a joke', 'תצחיק אותי')."},
+    {"name": "make_song", "server": "music", "tool": "create_song", "input": "what the song is about",
+     "description": "Make a song (music with vocals) about something."},
     {"name": "system_check", "input": "empty", "description": "Check Jarvis's systems."},
     {"name": "sync_vault", "input": "empty", "description": "Re-index the Obsidian vault now."},
 ]
@@ -200,11 +222,13 @@ TOOL_PROMPT = """Pick the ONE tool for the request to Jarvis, and its input.
 
 Rules: a question is ask_notes, even if it mentions YouTube, videos, memes or jokes ("who owns the youtube project?",
 "מה הוחלט על המם?"). Videos about the team, a person or "it / that" -> notes_then_shorts. "מים" is water, a meme only
-after a make verb ("תעשה לי מים על..."). Keep the request's language.
+after a make verb ("תעשה לי מים על..."). "שיר" is a song (or the name Shir): make_song only after a make verb.
+Keep the request's language.
 
 find me 5 youtube shorts about cooking -> {{"tool": "search_youtube_shorts", "input": "cooking"}}
 מה הצוות אוהב לאכול? תמצא לי שורטס על זה -> {{"tool": "notes_then_shorts", "input": "מה הצוות אוהב לאכול?"}}
 תספר לי בדיחה על מתכנתים -> {{"tool": "make_meme", "input": "מתכנתים"}}
+תכתוב לי שיר על הצוות -> {{"tool": "make_song", "input": "הצוות"}}
 מה הוחלט בישיבת הצוות? -> {{"tool": "ask_notes", "input": "מה הוחלט בישיבת הצוות?"}}
 
 {conversation}Request: {request}
@@ -244,6 +268,8 @@ def from_tool(name, given, text, by="model"):  # the model's choice -> the same 
         return Route("combo", given, {"mode": "search", **extra}, why)
     if name == "make_meme":
         return Route("meme", text, {}, why)  # as asked: the memes skill reads templates and captions from the words
+    if name == "make_song":
+        return Route("song", text, {}, why)  # as asked: the songs skill reads style, lyrics and title from the words
     if name == "system_check":
         return Route("status", "", {}, why)
     if name == "sync_vault":

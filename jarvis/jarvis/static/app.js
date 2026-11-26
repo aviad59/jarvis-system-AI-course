@@ -367,6 +367,27 @@ const HANDLERS = {
     fillCard(head, image, foot);
     say(e.hebrew ? "הנה המם שלך." : "Here's your meme.");   // after the notes answer, when there is one
   },
+  song(e) {   // songs from the music MCP server (Suno by default): an audio player per song, the lyrics folded away
+    const ready = e.songs.filter((s) => s.audio_url);
+    const name = e.title || e.songs.find((s) => s.title)?.title || e.topic;
+    const head = el("p", { class: "claim", dir: "auto", text: ready.length
+      ? `${name}${e.style ? " · " + e.style : ""}` : e.message || "The song is still being made." });
+    const players = el("div", { class: "songs" }, e.songs.map((s, i) => el("div", { class: "song" },
+      s.image_url ? el("img", { src: s.image_url, alt: "", loading: "lazy" }) : null,
+      el("div", { class: "song-body" },
+        el("span", { class: "song-title", dir: "auto", text: `${s.title || name}${e.songs.length > 1 ? ` (${i + 1})` : ""}` }),
+        s.audio_url ? el("audio", { controls: true, preload: "none", src: s.audio_url })
+          : el("span", { class: "song-wait", text: s.status ? `status: ${s.status}` : "still being made" }),
+        s.page_url ? el("a", { href: s.page_url, target: "_blank", rel: "noopener", text: `Open in ${e.supplier}` }) : null))));
+    const lyrics = e.lyrics ? el("details", { class: "song-lyrics" }, el("summary", { text: "Lyrics" }),
+      el("pre", { dir: "auto", text: e.lyrics })) : null;
+    const foot = el("div", { class: "answer-foot" }, el("span", { text: e.supplier || "music" }),
+      el("span", { text: "MCP tool: create_song" }), ready.length ? null : el("span", { text: e.status || "pending" }),
+      e.notes?.length ? el("span", { dir: "auto", text: `from your notes: ${e.notes.join(", ")}` }) : null);
+    fillCard(head, e.songs.length ? players : null, lyrics, foot);
+    say(ready.length ? (e.hebrew ? "הנה השיר שלך." : "Here's your song.")
+      : e.hebrew ? "השיר עדיין בהכנה, הוא יופיע בספרייה שלך." : "Your song is still being made; it will be in your library.");
+  },
   status(e) { renderSystems(e.systems); },
   error(e) {
     fillCard(el("p", { class: "claim", text: e.message }));
@@ -403,7 +424,7 @@ const HANDLERS = {
     }
   },
 };
-const SPOKEN = new Set(["answer", "message", "posts", "meme"]);   // events that carry the reply
+const SPOKEN = new Set(["answer", "message", "posts", "meme", "song"]);   // events that carry the reply
 function handle(event) {
   const handler = HANDLERS[event.type];
   if (handler) handler(event);

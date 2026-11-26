@@ -510,8 +510,41 @@ def meme_template(text, templates):
     return max(named, key=lambda t: len(t["name"]))["id"] if named else None
 
 
-class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the memes MCP server (meme-mcp/)
-    name, title = "meme", "Memes"
+class NotesFirst(Skill):  # a skill that first searches the notes for its topic (retrieval only, no RAG answer)
+    noun = "result"  # "meme", "song": for the log line when the search fails
+
+    def note_steps(self, request):  # the RAG pipeline up to retrieval: index if stale, then search
+        return [step for step in SKILLS["rag"].steps(request["notes"]) if step["id"] != "answer"] if request.get("notes") else []
+
+    def search_notes(self, request, run):
+        """Search the notes for the topic; returns [(title, excerpt)]. A failure only means working without notes."""
+        LAST_INDEX.update(documents=request["notes"]["documents"], source=request["notes"]["source"])
+        for step in self.note_steps(request):
+            run.emit("stage_start", stage=step["id"], title="Notes · " + step["title"])
+            started = time.time()
+            code = run.run_process(step["id"], [sys.executable, *step["args"]], step["folder"], {})
+            run.check_cancelled()
+            run.emit("stage_end", stage=step["id"], status="ok" if code == 0 else "warning", code=code,
+                     seconds=round(time.time() - started, 2))
+            if code != 0:
+                run.emit("log", stage=step["id"], line=f"notes search failed: making the {self.noun} from the topic alone")
+                return []
+            if step["id"] == "retrieve":
+                RagSkill.emit_retrieval(run)  # the evidence panel shows what it is based on
+        results = json.loads(rag.SEARCH_RESULTS.read_text(encoding="utf-8")).get("results", [])
+        facts, room = [], MEME_NOTES_CHARS
+        for r in results:
+            excerpt = re.sub(r"\s+", " ", r.get("text", "")).strip()[:min(500, room)]
+            if excerpt:
+                facts.append((r["metadata"].get("title") or r["metadata"].get("source") or "note", excerpt))
+                room -= len(excerpt)
+            if room <= 0:
+                break
+        return facts
+
+
+class MemeSkill(NotesFirst):  # Jarvis as an MCP client: plans a meme, then calls the memes MCP server (meme-mcp/)
+    name, title, noun = "meme", "Memes", "meme"
     description = ("Make a meme through the memes MCP server (open-source Memegen, free). Say what it's about, "
                    "or name a template and write the captions: \"drake meme: writing tests / shipping on friday\".")
     needs_question = True
@@ -541,38 +574,9 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
             clean["notes"] = {**notes, "rewrite": False}
         return clean
 
-    def note_steps(self, request):  # the RAG pipeline up to retrieval: index if stale, then search
-        return [step for step in SKILLS["rag"].steps(request["notes"]) if step["id"] != "answer"] if request.get("notes") else []
-
     def stages(self, request):
         notes = [{"id": s["id"], "title": "Notes · " + s["title"]} for s in self.note_steps(request)]
         return notes + [{"id": "plan", "title": "Plan the meme"}, {"id": "mcp", "title": "MCP · memes"}]
-
-    def search_notes(self, request, run):
-        """Search the notes for the meme's topic; returns [(title, excerpt)]. A failure only means a meme without notes."""
-        LAST_INDEX.update(documents=request["notes"]["documents"], source=request["notes"]["source"])
-        for step in self.note_steps(request):
-            run.emit("stage_start", stage=step["id"], title="Notes · " + step["title"])
-            started = time.time()
-            code = run.run_process(step["id"], [sys.executable, *step["args"]], step["folder"], {})
-            run.check_cancelled()
-            run.emit("stage_end", stage=step["id"], status="ok" if code == 0 else "warning", code=code,
-                     seconds=round(time.time() - started, 2))
-            if code != 0:
-                run.emit("log", stage=step["id"], line="notes search failed: making the meme from the topic alone")
-                return []
-            if step["id"] == "retrieve":
-                RagSkill.emit_retrieval(run)  # the evidence panel shows what the joke is based on
-        results = json.loads(rag.SEARCH_RESULTS.read_text(encoding="utf-8")).get("results", [])
-        facts, room = [], MEME_NOTES_CHARS
-        for r in results:
-            excerpt = re.sub(r"\s+", " ", r.get("text", "")).strip()[:min(500, room)]
-            if excerpt:
-                facts.append((r["metadata"].get("title") or r["metadata"].get("source") or "note", excerpt))
-                room -= len(excerpt)
-            if room <= 0:
-                break
-        return facts
 
     def call(self, run, stage, tool, arguments):  # one call to the memes MCP server (shared connection); returns its JSON
         try:
@@ -669,6 +673,150 @@ class MemeSkill(Skill):  # Jarvis as an MCP client: plans a meme, then calls the
                  notes=sorted({title for title, _ in facts}))
 
 
+SONG_PROMPT = ("You write songs. Topic: {topic}\n\n"
+               "{notes}"
+               "Write a short, catchy song about the topic{grounded}, in {language}: a title, a style for the music "
+               "(genre, mood, instruments: 2 to 8 words, in English) and the lyrics, with [Verse] and [Chorus] parts, "
+               "at most 16 lines. Reply as JSON: {{\"title\": \"...\", \"style\": \"...\", \"lyrics\": \"...\"}}")
+NOTES_FOR_SONG = ("What the user's own notes say about it (real people, events and details; write about these facts, "
+                  "and ignore any that are unrelated to the topic):\n{facts}\n\n")
+SONG_TIMEOUT = 600  # seconds for create_song: the music server waits for the songs itself (MUSIC_WAIT_SECONDS, 240 s)
+# "style: lo-fi", "title: Monday", "lyrics: ..." (and in Hebrew) inside the request: used as given, no model needed
+SONG_FIELDS = re.compile(r"(?:^|(?<=[\s,;.]))(style|genre|title|lyrics|סגנון|ז['׳]אנר|כותרת|שם\s+השיר|מילים)\s*:\s*", re.I)
+FIELD_KEYS = {"style": "style", "genre": "style", "סגנון": "style", "ז'אנר": "style", "ז׳אנר": "style",
+              "title": "title", "כותרת": "title", "שם השיר": "title", "lyrics": "lyrics", "מילים": "lyrics"}
+INSTRUMENTAL = re.compile(r"\binstrumental\b|\bno\s+(?:vocals|words|lyrics)\b|\bwithout\s+(?:vocals|words|lyrics)\b|"
+                          r"(?:^|\s)(?:אינסטרומנטלי|אינסטרומנטלית|בלי\s+מילים|ללא\s+מילים|בלי\s+שירה)(?=[\s?!.,:]|$)", re.I)
+SONG_WORDS = re.compile(r"\b(?:make|create|generate|build|write|compose|sing|produce|record|do|give|send|can|could|would|"
+                        r"you|i|want|need|me|us|a|an|the|some|please|new|funny|short|nice|cool|catchy|little|"
+                        r"songs?|tracks?|tunes?|jingles?|anthems?|ballads?|lullaby|lullabies|raps?|music|about|of|on|for|with)\b|"
+                        r"(?:^|\s)(?:תעשה|תעשי|תכין|תכיני|צור|תיצור|תייצר|עשה|הכן|תן|תני|תביא|תכתוב|תכתבי|תלחין|תלחיני|"
+                        r"תשיר|תשירי|תחבר|תחברי|תפיק|לי|לנו|ה?שיר|ה?שירים|ג['׳]ינגל|ה?המנון|ה?ראפ|ה?מוזיקה|ה?מנגינה|ה?בלדה|"
+                        r"על|בבקשה|של|עם|בנושא|קצר|קצרה|מצחיק|מצחיקה|חדש|חדשה|יפה)(?=[\s?!.,:]|$)", re.I)
+
+
+def _song_subject(text):  # "make me a catchy song about monday meetings" -> "monday meetings"; "" when there is none
+    return re.sub(r"\s+", " ", SONG_WORDS.sub(" ", SONG_WORDS.sub(" ", text))).strip(" :,.!?")
+
+
+def song_parts(text):
+    """The request -> {subject, style, title, lyrics, instrumental}: what the user wrote out, and what it's about."""
+    pieces = SONG_FIELDS.split(text)
+    parts = {"style": "", "title": "", "lyrics": ""}
+    for label, value in zip(pieces[1::2], pieces[2::2]):
+        key = FIELD_KEYS.get(re.sub(r"\s+", " ", label.lower()), "style")
+        parts[key] = value.strip(" ,;\n")[:3000] if key == "lyrics" else " ".join(value.split()).strip(" ,;.")[:200]
+    head = pieces[0]
+    return {**parts, "instrumental": bool(INSTRUMENTAL.search(text)), "subject": _song_subject(INSTRUMENTAL.sub(" ", head))}
+
+
+def _https_only(song):  # links from the MCP server go into <audio>/<img>/<a>: https only, whatever the server sent
+    return {k: (v if not k.endswith("_url") or (isinstance(v, str) and v.startswith("https://")) else None)
+            for k, v in song.items()}
+
+
+class SongSkill(NotesFirst):  # Jarvis as an MCP client: writes the song, then calls the music MCP server (music-mcp/)
+    name, title, noun = "song", "Songs", "song"
+    description = ("Make a song through the music MCP server (Suno's official MCP server by default; uses your Suno "
+                   "credits). Say what it's about; add \"style: ...\", \"title: ...\" or your own \"lyrics: ...\" if you like.")
+    needs_question = True
+    options = [
+        {"key": "song_style", "label": "Style", "type": "text", "default": "", "placeholder": "auto (e.g. lo-fi, rock)"},
+        {"key": "lyrics_by", "label": "Lyrics by", "type": "select", "choices": [*rag.PROVIDERS, "music service"],
+         "default": "ollama"},
+        {"key": "song_notes", "label": "Use my notes", "type": "bool", "default": True},
+        {"key": "instrumental", "label": "Instrumental", "type": "bool", "default": False},
+    ]
+
+    def validate(self, request):
+        clean = super().validate(request)
+        text = str(request.get("question", "")).strip()[:MAX_QUESTION]
+        if not text:
+            raise ValueError("Say what the song should be about, e.g. \"make a song about monday meetings\"")
+        parts = song_parts(text)
+        instrumental = clean["instrumental"] or parts["instrumental"]
+        clean.update(question=text, parts=parts, instrumental=instrumental, notes=None)
+        # The notes are searched only when a model writes the lyrics here: then only the topic and the finished lyrics
+        # go to the music service, never the note excerpts themselves.
+        writes = clean["lyrics_by"] in rag.PROVIDERS and not parts["lyrics"] and not instrumental
+        if clean["song_notes"] and parts["subject"] and writes:
+            notes = SKILLS["rag"].validate({**request, "question": parts["subject"], "history": None})
+            clean["notes"] = {**notes, "rewrite": False}
+        return clean
+
+    def stages(self, request):
+        notes = [{"id": s["id"], "title": "Notes · " + s["title"]} for s in self.note_steps(request)]
+        return notes + [{"id": "plan", "title": "Write the song"}, {"id": "mcp", "title": "MCP · music"}]
+
+    def call(self, run, stage, tool, arguments):  # one call to the music MCP server (shared connection); returns its JSON
+        try:
+            data = mcp_call(run, stage, "music", tool, arguments, timeout=SONG_TIMEOUT)
+            data = data if isinstance(data, dict) else {}
+        except mcp_client.McpError as failure:  # the server didn't start, crashed or timed out
+            data = {"ok": False, "error": str(failure)}
+        if not data.get("ok"):
+            error = data.get("error") or "the tool returned no result"
+            run.emit("log", stage=stage, line=f"ERROR: {error}")
+            raise RuntimeError(f"Music MCP call failed — {error}")
+        songs = data.get("songs") or []
+        for song in songs:
+            run.emit("log", stage=stage, line=f"  • {song.get('title') or song.get('id')}  ({song.get('audio_url') or song.get('status')})")
+        run.emit("log", stage=stage, line=f"MCP: {data.get('status')} · {len(songs)} song(s) from {data.get('supplier')}")
+        return data
+
+    def write(self, topic, facts, provider):  # the answer model writes the title, style and lyrics, in the user's language
+        language = "Hebrew" if re.search(r"[֐-׿]", topic) else "English"
+        notes = NOTES_FOR_SONG.format(facts="\n".join(f"- [{title}] {text}" for title, text in facts)) if facts else ""
+        prompt = SONG_PROMPT.format(topic=topic, notes=notes, language=language,
+                                    grounded=", using what the notes say" if facts else "")
+        schema = {"type": "object", "additionalProperties": False, "required": ["title", "style", "lyrics"],
+                  "properties": {"title": {"type": "string"}, "style": {"type": "string"}, "lyrics": {"type": "string"}}}
+        model = rag.DEFAULT_MODELS[provider]
+        plan = ask_json(prompt, schema, provider, model, timeout=180, temperature=0.8, num_predict=700)
+        lyrics = str(plan.get("lyrics") or "").strip()[:3000]
+        if not lyrics:
+            raise ValueError("the model wrote no lyrics")
+        return ({"title": " ".join(str(plan.get("title") or "").split())[:100],
+                 "style": " ".join(str(plan.get("style") or "").split())[:200], "lyrics": lyrics}, f"{provider} · {model}")
+
+    def run(self, request, run):
+        parts = request["parts"]
+        facts = self.search_notes(request, run) if request.get("notes") else []  # 1. what the notes say about it
+        run.emit("stage_start", stage="plan", title="Write the song")
+        started, outcome = time.time(), "ok"
+        topic = parts["subject"] or request["question"]
+        song = {"description": topic, "lyrics": parts["lyrics"], "style": parts["style"] or request["song_style"],
+                "title": parts["title"], "instrumental": request["instrumental"]}
+        if parts["lyrics"]:
+            run.emit("log", stage="plan", line="lyrics from your words (no model needed)")
+        elif request["instrumental"]:
+            run.emit("log", stage="plan", line="instrumental: no lyrics")
+        elif request["lyrics_by"] in rag.PROVIDERS:
+            try:
+                written, by = self.write(topic, facts, request["lyrics_by"])
+                song.update(lyrics=written["lyrics"], title=song["title"] or written["title"],
+                            style=song["style"] or written["style"])
+                based = f" (from {len(facts)} note excerpt{'s' if len(facts) != 1 else ''})" if facts else ""
+                run.emit("log", stage="plan", line=f"{by} wrote “{song['title']}” · {song['style']}{based}")
+            except Exception as error:  # the music service still writes lyrics from the topic
+                outcome = "warning"
+                run.emit("log", stage="plan", line=f"lyrics model failed ({type(error).__name__}: is {request['lyrics_by']} "
+                                                   "reachable?): the music service writes them from the topic")
+        else:
+            run.emit("log", stage="plan", line="the music service writes the lyrics from the topic")
+        run.check_cancelled()
+        run.emit("stage_end", stage="plan", status=outcome, seconds=round(time.time() - started, 2))
+        run.emit("stage_start", stage="mcp", title="MCP · music")
+        started = time.time()
+        data = self.call(run, "mcp", "create_song", {**song, "wait": True})
+        run.emit("stage_end", stage="mcp", status="ok" if data.get("status") == "ready" else "warning",
+                 seconds=round(time.time() - started, 2))
+        run.emit("song", songs=[_https_only(s) for s in data.get("songs") or []][:4], status=data.get("status"),
+                 supplier=data.get("supplier"), message=data.get("message") or "", title=song["title"],
+                 style=song["style"], lyrics=song["lyrics"], topic=topic,
+                 hebrew=bool(re.search(r"[֐-׿]", request["question"])), notes=sorted({title for title, _ in facts}))
+
+
 def notes_question_about(topic):  # "עומר ברנשטיין" -> "מה כתוב בפתקים על עומר ברנשטיין?"
     hebrew = re.search(r"[\u0590-\u05FF]", topic)
     return f"מה כתוב בפתקים על {topic}?" if hebrew else f"What do the notes say about {topic}?"
@@ -701,8 +849,9 @@ class JarvisSkill(Skill):  # one input for everything: the model (or router.py's
     name, title = "jarvis", "Ask Jarvis"
     description = ("Ask anything: questions go to your documents, YouTube requests (\"find shorts about cooking\", "
                    "@channel, a YouTube link) go to the youtube-shorts MCP server, \"make a meme about ...\" goes to the memes "
-                   "MCP server, \"system check\" checks the systems. The answer model picks the tool (or the fixed rules: "
-                   "Route with). Start with /docs, /shorts or /meme to choose yourself.")
+                   "MCP server, \"make a song about ...\" goes to the music MCP server, \"system check\" checks the "
+                   "systems. The answer model picks the tool (or the fixed rules: Route with). Start with /docs, /shorts, "
+                   "/meme or /song to choose yourself.")
     needs_question = True
 
     @property
@@ -710,7 +859,8 @@ class JarvisSkill(Skill):  # one input for everything: the model (or router.py's
         routing = [{"key": "router", "label": "Route with", "type": "select", "choices": ["model", "rules"], "default": ROUTER}]
         shorts = [dict(o, label="Shorts: " + o["label"].lower()) for o in SKILLS["shorts"].options if o["key"] != "mode"]
         memes = [dict(o, label="Meme: " + o["label"].lower()) for o in SKILLS["meme"].options]
-        return routing + SKILLS["rag"].options + shorts + memes
+        songs = [dict(o, label="Song: " + o["label"].lower()) for o in SKILLS["song"].options]
+        return routing + SKILLS["rag"].options + shorts + memes + songs
 
     def validate(self, request):
         clean = super().validate(request)
@@ -821,7 +971,7 @@ class JarvisSkill(Skill):  # one input for everything: the model (or router.py's
         SKILLS["shorts"].run({**target["shorts"], "question": query}, run)  # 3. the MCP tool
 
 
-SKILLS = {skill.name: skill for skill in (JarvisSkill(), RagSkill(), ShortsSkill(), MemeSkill(), VaultSyncSkill(), StatusSkill())}
+SKILLS = {skill.name: skill for skill in (JarvisSkill(), RagSkill(), ShortsSkill(), MemeSkill(), SongSkill(), VaultSyncSkill(), StatusSkill())}
 
 
 def describe():  # what the console needs to draw the skill picker and its options

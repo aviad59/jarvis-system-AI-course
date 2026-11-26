@@ -488,6 +488,69 @@ class JarvisServer(unittest.TestCase):
         self.assertEqual(next(e for e in events if e["type"] == "meme")["template"], "drake")
         self.assertEqual(events[-1]["status"], "done")
 
+    def test_song_requests_route_to_the_songs_skill(self):
+        import router
+        for text in ("make a song about monday meetings", "compose a jingle for the team", "write me a rap about bugs",
+                     "sing me a lullaby", "תעשה לי שיר על ישיבות", "תלחין לי מנגינה על גשם", "/song cats", "/music rain",
+                     "song about cats", "i want a song about cats", "play me a jingle for the team", "שיר על חתולים",
+                     "אני רוצה שיר על הצוות", "בא לי שיר על הים", "שיר לאמא"):
+            self.assertEqual(router.route(text).skill, "song", text)
+        for text, skill in (("what song did we pick?", "rag"), ("מה השיר של הצוות?", "rag"), ("מי זאת שיר?", "rag"),
+                            ("שיר אמרה שהיא תגיע", "rag"), ("record the meeting notes", "rag"),
+                            ("find shorts of songs", "shorts"), ("give me youtube shorts about music", "shorts"),
+                            ("make a meme about our team song", "meme"), ("שיר רוצה לדבר איתך", "rag"),
+                            ("i like that song", "rag"), ("i need the notes about music class", "rag"), ("שיר על הגג?", "rag")):
+            self.assertEqual(router.route(text).skill, skill, text)  # "שיר" is also a name; questions stay with the notes
+        self.assertEqual(router.from_tool("make_song", "cats", "make a song about cats").skill, "song")
+        prompt = router.tool_prompt("x", [], lambda server, tool: "LIVE " + tool if server == "music" else None)
+        self.assertIn("make_song(input: what the song is about): LIVE create_song\n", prompt)
+
+    def test_song_requests_are_read_into_parts(self):
+        parts = skills.song_parts("make a catchy song about monday meetings, style: lo-fi")
+        self.assertEqual((parts["subject"], parts["style"], parts["lyrics"]), ("monday meetings", "lo-fi", ""))
+        self.assertEqual(skills.song_parts("תכתוב לי שיר על עומר ברנשטיין")["subject"], "עומר ברנשטיין")
+        own = skills.song_parts("write a song. title: Bugs, lyrics: la la\nla")
+        self.assertEqual((own["title"], own["lyrics"]), ("Bugs", "la la\nla"))
+        self.assertTrue(skills.song_parts("make an instrumental track about rain")["instrumental"])
+        self.assertTrue(skills.song_parts("תעשה לי שיר בלי מילים על הים")["instrumental"])
+        song = skills.SKILLS["jarvis"].validate({"question": "make a song about cats"})["route"]
+        self.assertEqual((song["skill"], [s["id"] for s in skills.SKILLS["jarvis"].stages({"route": song})][-3:]),
+                         ("song", ["retrieve", "plan", "mcp"]))  # the notes first, when a model writes the lyrics
+        for request in ({"lyrics_by": "music service"}, {"song_notes": False}, {"instrumental": True},
+                        {"question": "a song, lyrics: la la"}):  # the notes are never sent to the music service
+            clean = skills.SKILLS["song"].validate({"question": "make a song about cats", **request})
+            self.assertIsNone(clean["notes"], request)
+        with self.assertRaises(ValueError):
+            skills.SKILLS["song"].validate({"question": " "})
+        self.assertEqual(self.json("/api/runs", {"skill": "song", "request": {"question": "x", "lyrics_by": "gpt"}})[0], 400)
+        self.assertEqual(skills._https_only({"audio_url": "http://x/a.mp3", "image_url": "https://x/a.png", "id": "1"}),
+                         {"audio_url": None, "image_url": "https://x/a.png", "id": "1"})
+
+    def test_song_lyrics_are_written_from_the_notes(self):  # the model sees the note excerpts; no network
+        sent = {}
+
+        class Reply:
+            def __init__(self, body): self.body = body
+            def __enter__(self): return self
+            def __exit__(self, *a): return False
+            def read(self): return self.body
+
+        def fake_urlopen(call, timeout=None):
+            sent.update(json.loads(call.data.decode("utf-8")))
+            plan = {"title": "עומר", "style": "mizrahi pop", "lyrics": "[Verse]\nעומר הביא פיצה"}
+            return Reply(json.dumps({"message": {"content": json.dumps(plan)}}).encode())
+        real = skills.urllib.request.urlopen
+        skills.urllib.request.urlopen = fake_urlopen
+        try:
+            written, by = skills.SKILLS["song"].write("עומר ברנשטיין", [("Meeting 11.11", "Omer brought pizza")], "ollama")
+        finally:
+            skills.urllib.request.urlopen = real
+        prompt = sent["messages"][0]["content"]
+        self.assertIn("Omer brought pizza", prompt)
+        self.assertIn("Hebrew", prompt)
+        self.assertEqual((written["style"], written["lyrics"]), ("mizrahi pop", "[Verse]\nעומר הביא פיצה"))
+        self.assertTrue(by.startswith("ollama · "))
+
     def test_media_serves_only_meme_files(self):  # locally drawn (Hebrew) memes; nothing else is reachable
         media = server.MEDIA
         media.mkdir(parents=True, exist_ok=True)
@@ -779,7 +842,7 @@ import json, os, sys, threading, time
 state = {"initialized": False, "cancelled": []}
 out = threading.Lock()
 TOOLS = [{"name": name, "description": f"Fake {name} tool.", "inputSchema": {"type": "object", "properties": {}}}
-         for name in ("echo", "fail", "sleep", "exit", "cancelled", "search_youtube_shorts")]
+         for name in ("echo", "fail", "sleep", "exit", "cancelled", "search_youtube_shorts", "create_song")]
 TOOLS.append({"name": "wrapped", "description": "A list result, wrapped like fastmcp does.", "inputSchema": {"type": "object"},
               "outputSchema": {"type": "object", "properties": {"result": {}}, "x-fastmcp-wrap-result": True}})
 
@@ -807,6 +870,10 @@ def call(request_id, name, args):
         data(request_id, {"ok": True, "ids": state["cancelled"]})
     elif name == "wrapped":
         data(request_id, {"result": [1, 2]})
+    elif name == "create_song":
+        data(request_id, {"ok": True, "supplier": "Fake", "status": "ready", "message": "", "songs": [
+            {"id": "s1", "title": args.get("title") or "Cats", "status": "complete", "ready": True,
+             "audio_url": "https://cdn.example/s1.mp3", "image_url": "http://cdn.example/s1.png", "page_url": None}]})
     elif name == "search_youtube_shorts":
         data(request_id, {"ok": True, "count": 1, "posts": [{"title": f"{args['query']} short", "url": "https://youtube.com/shorts/x"}]})
     else:
@@ -926,7 +993,7 @@ class McpClient(unittest.TestCase):  # mcp_client.py against the fake server abo
             client.list_tools("broken")
 
     def test_servers_come_from_mcp_json_with_their_venv(self):
-        self.assertEqual(self.mcp.servers(), ["youtube-shorts", "memes"])  # jarvis/.mcp.json
+        self.assertEqual(self.mcp.servers(), ["youtube-shorts", "memes", "music"])  # jarvis/.mcp.json
         argv, cwd, _ = self.mcp.resolve(self.spec, self.root)
         self.assertEqual((argv, Path(cwd)), ([sys.executable, str(self.root / "fake" / "server.py")], self.root / "fake"))
         venv = self.root / "fake" / ".venv" / ("Scripts/python.exe" if sys.platform == "win32" else "bin/python")
@@ -942,7 +1009,7 @@ class McpClient(unittest.TestCase):  # mcp_client.py against the fake server abo
 
     def test_skills_call_tools_over_the_shared_connection(self):  # ShortsSkill / MemeSkill -> mcp_client -> fake server
         import runs
-        saved, self.mcp.DEFAULT = self.mcp.DEFAULT, self.client("youtube-shorts", "memes")
+        saved, self.mcp.DEFAULT = self.mcp.DEFAULT, self.client("youtube-shorts", "memes", "music")
         try:
             request = skills.SKILLS["shorts"].validate({"question": "cats", "limit": 2})
             run = runs.Run("shorts", request)
@@ -958,6 +1025,17 @@ class McpClient(unittest.TestCase):  # mcp_client.py against the fake server abo
             run.cancelled = True
             with self.assertRaises(runs.Cancelled):
                 skills.SKILLS["meme"].call(run, "mcp", "sleep", {"seconds": 30})
+            request = skills.SKILLS["song"].validate({"question": "a song about cats, title: Meow, lyrics: meow meow"})
+            run = runs.Run("song", request)
+            skills.SKILLS["song"].run(request, run)  # own lyrics: no model, no notes
+            logs = [e["line"] for e in run.events if e["type"] == "log" and e["stage"] == "mcp"]
+            self.assertIn('MCP: call create_song {"description": "cats", "lyrics": "meow meow", "style": "", "title": "Meow", '
+                          '"instrumental": false, "wait": true}', logs)
+            song = next(e for e in run.events if e["type"] == "song")
+            self.assertEqual((song["status"], song["songs"][0]["audio_url"], song["songs"][0]["image_url"], song["title"]),
+                             ("ready", "https://cdn.example/s1.mp3", None, "Meow"))  # http links dropped
+            with self.assertRaisesRegex(RuntimeError, "^Music MCP call failed — boom$"):
+                skills.SKILLS["song"].call(run, "mcp", "fail", {})
         finally:
             self.mcp.DEFAULT = saved
 

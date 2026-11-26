@@ -483,3 +483,16 @@ body[data-state="error"] .core { filter: drop-shadow(0 0 16px rgba(255, 79, 109,
 .meme { display: block; margin-top: 10px; max-width: min(100%, 520px); border: 1px solid var(--line); background: #000; }
 .meme img { display: block; width: 100%; height: auto; }
 .meme:hover { border-color: var(--cyan-bright); }
+
+/* Songs (music MCP server) */
+.songs { display: grid; gap: 10px; margin-top: 10px; max-width: min(100%, 560px); }
+.song { display: flex; gap: 12px; align-items: center; padding: 8px; border: 1px solid var(--line); }
+.song img { width: 64px; height: 64px; object-fit: cover; flex: none; }
+.song-body { display: flex; flex-direction: column; gap: 6px; min-width: 0; flex: 1; }
+.song-title { color: var(--text); overflow-wrap: anywhere; }
+.song audio { width: 100%; }
+.song a, .song-wait { color: var(--text-dim); font: 12px/1.5 var(--font-mono); }
+.song a:hover { color: var(--cyan-bright); }
+.song-lyrics { margin-top: 10px; max-width: min(100%, 560px); }
+.song-lyrics summary { cursor: pointer; color: var(--text-dim); font: 12px/1.5 var(--font-mono); }
+.song-lyrics pre { white-space: pre-wrap; font: 13px/1.5 var(--font-body); color: var(--text); margin: 6px 0 0; }
